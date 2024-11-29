@@ -1,17 +1,8 @@
 """Aqara H1-series wireless remote."""
 
-from zigpy.profiles import zha
-import zigpy.types as t
 from zigpy.quirks.v2 import ClusterType, QuirkBuilder
-from zigpy.zcl.clusters.general import (
-    Basic,
-    Identify,
-    LevelControl,
-    MultistateInput,
-    OnOff,
-    PowerConfiguration,
-)
-from zigpy.zcl.clusters.lighting import Color
+import zigpy.types as t
+from zigpy.zcl.clusters.general import Identify, OnOff
 from zigpy.zcl.foundation import BaseAttributeDefs, ZCLAttributeDef
 
 from zhaquirks import PowerConfigurationCluster
@@ -31,11 +22,7 @@ from zhaquirks.const import (
     SHORT_PRESS,
     TRIPLE_PRESS,
 )
-from zhaquirks.xiaomi import (
-    LUMI,
-    XiaomiAqaraE1Cluster,
-    XiaomiCustomDevice,
-)
+from zhaquirks.xiaomi import LUMI, XiaomiAqaraE1Cluster
 from zhaquirks.xiaomi.aqara.opple_remote import (
     COMMAND_1_DOUBLE,
     COMMAND_1_HOLD,
