@@ -1,7 +1,7 @@
 """Aqara H1-series wireless remote."""
 
+from zigpy import types
 from zigpy.quirks.v2 import ClusterType, QuirkBuilder
-import zigpy.types as t
 from zigpy.zcl.clusters.general import Identify, OnOff
 from zigpy.zcl.foundation import BaseAttributeDefs, ZCLAttributeDef
 
@@ -42,14 +42,14 @@ from zhaquirks.xiaomi.aqara.opple_remote import (
 BOTH_BUTTONS = "both_buttons"
 
 
-class AqaraSwitchClickMode(t.enum8):
+class AqaraSwitchClickMode(types.enum8):
     """Aqara switch click mode attribute values."""
 
     Single = 1  # Low latency (50ms) but only sends single click events.
     Multiple = 2  # (default) Slightly higher latency but supports single/double/triple click and long press.
 
 
-class AqaraSwitchOperationMode(t.enum8):
+class AqaraSwitchOperationMode(types.enum8):
     """Aqara switch operation mode attribute values."""
 
     Command = 0
@@ -66,14 +66,14 @@ class AqaraRemoteManuSpecificCluster(XiaomiAqaraE1Cluster):
 
         operation_mode = ZCLAttributeDef(
             id=0x0009,
-            type=t.uint8_t,
+            type=types.uint8_t,
             access="rw",
             is_manufacturer_specific=True,
         )
 
         click_mode = ZCLAttributeDef(
             id=0x0125,
-            type=t.uint8_t,
+            type=types.uint8_t,
             access="rw",
             is_manufacturer_specific=True,
         )
@@ -141,13 +141,18 @@ class PowerConfigurationClusterH1Remote(PowerConfigurationCluster):
         manufacturer="Aqara", model="Wireless Remote Switch H1 (Double Rocker)"
     )
     .adds(AqaraRemoteManuSpecificCluster)
+    .adds(Identify)
+    .adds(Identify, cluster_type=ClusterType.Client)
     .adds(Identify, endpoint_id=2)
     .adds(Identify, endpoint_id=2, cluster_type=ClusterType.Client)
+    .adds(Identify, endpoint_id=3)
     .adds(Identify, endpoint_id=3, cluster_type=ClusterType.Client)
     .adds(MultistateInputCluster)
     .adds(MultistateInputCluster, endpoint_id=2)
     .adds(MultistateInputCluster, endpoint_id=3)
+    .adds(OnOff, cluster_type=ClusterType.Client)
     .adds(OnOff, endpoint_id=2, cluster_type=ClusterType.Client)
+    .adds(OnOff, endpoint_id=3, cluster_type=ClusterType.Client)
     .replaces(PowerConfigurationClusterH1Remote)
     .enum(
         AqaraRemoteManuSpecificCluster.AttributeDefs.click_mode.name,
