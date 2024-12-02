@@ -90,11 +90,11 @@ class PowerConfigurationClusterH1Remote(PowerConfigurationCluster):
 
 (
     QuirkBuilder(LUMI, "lumi.remote.b18ac1")
-    .friendly_name(
-        manufacturer="Aqara", model="Wireless Remote Switch H1 (Single Rocker)"
-    )
-    .adds(AqaraRemoteManuSpecificCluster)
-    .adds(MultistateInputCluster)
+    #    .friendly_name(
+    #        manufacturer="Aqara", model="Wireless Remote Switch H1 (Single Rocker)"
+    #    )
+    .replaces(AqaraRemoteManuSpecificCluster)
+    .replaces(MultistateInputCluster)
     .replaces(PowerConfigurationClusterH1Remote)
     .enum(
         AqaraRemoteManuSpecificCluster.AttributeDefs.click_mode.name,
@@ -137,19 +137,14 @@ class PowerConfigurationClusterH1Remote(PowerConfigurationCluster):
 
 (
     QuirkBuilder(LUMI, "lumi.remote.b28ac1")
-    .friendly_name(
-        manufacturer="Aqara", model="Wireless Remote Switch H1 (Double Rocker)"
-    )
-    .adds(AqaraRemoteManuSpecificCluster)
+    #    .friendly_name(
+    #        manufacturer="Aqara", model="Wireless Remote Switch H1 (Double Rocker)"
+    #    )
+    .replaces(AqaraRemoteManuSpecificCluster)
     .adds(Identify)
-    .adds(Identify, cluster_type=ClusterType.Client)
-    .adds(Identify, endpoint_id=2)
-    .adds(Identify, endpoint_id=2, cluster_type=ClusterType.Client)
-    .adds(Identify, endpoint_id=3)
-    .adds(Identify, endpoint_id=3, cluster_type=ClusterType.Client)
-    .adds(MultistateInputCluster)
-    .adds(MultistateInputCluster, endpoint_id=2)
-    .adds(MultistateInputCluster, endpoint_id=3)
+    .replaces(MultistateInputCluster)
+    .replaces(MultistateInputCluster, endpoint_id=2)
+    .replaces(MultistateInputCluster, endpoint_id=3)
     .adds(OnOff, cluster_type=ClusterType.Client)
     .adds(OnOff, endpoint_id=2, cluster_type=ClusterType.Client)
     .adds(OnOff, endpoint_id=3, cluster_type=ClusterType.Client)
