@@ -3,7 +3,7 @@
 from zigpy import types
 from zigpy.quirks.v2 import ClusterType, QuirkBuilder
 from zigpy.zcl.clusters.general import Identify, OnOff
-from zigpy.zcl.foundation import BaseAttributeDefs, ZCLAttributeDef
+from zigpy.zcl.foundation import BaseAttributeDefs, DataTypeId, ZCLAttributeDef
 
 from zhaquirks import PowerConfigurationCluster
 from zhaquirks.const import (
@@ -45,15 +45,15 @@ BOTH_BUTTONS = "both_buttons"
 class AqaraSwitchClickMode(types.enum8):
     """Aqara switch click mode attribute values."""
 
-    Single = 1  # Low latency (50ms) but only sends single click events.
-    Multiple = 2  # (default) Slightly higher latency but supports single/double/triple click and long press.
+    Single = 0x01  # Low latency (50ms) but only sends single click events.
+    Multiple = 0x02  # (default) Slightly higher latency but supports single/double/triple click and long press.
 
 
 class AqaraSwitchOperationMode(types.enum8):
     """Aqara switch operation mode attribute values."""
 
-    Command = 0
-    Event = 1
+    Command = 0x00
+    Event = 0x01
 
 
 class AqaraRemoteManuSpecificCluster(XiaomiAqaraE1Cluster):
@@ -66,14 +66,16 @@ class AqaraRemoteManuSpecificCluster(XiaomiAqaraE1Cluster):
 
         operation_mode = ZCLAttributeDef(
             id=0x0009,
-            type=types.uint8_t,
+            type=AqaraSwitchOperationMode,
+            zcl_type=DataTypeId.uint8,
             access="rw",
             is_manufacturer_specific=True,
         )
 
         click_mode = ZCLAttributeDef(
             id=0x0125,
-            type=types.uint8_t,
+            type=AqaraSwitchClickMode,
+            zcl_type=DataTypeId.uint8,
             access="rw",
             is_manufacturer_specific=True,
         )
