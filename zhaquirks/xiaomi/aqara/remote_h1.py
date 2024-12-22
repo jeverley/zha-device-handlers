@@ -92,9 +92,10 @@ class PowerConfigurationClusterH1Remote(PowerConfigurationCluster):
 
 (
     QuirkBuilder(LUMI, "lumi.remote.b18ac1")
-    #    .friendly_name(
-    #        manufacturer="Aqara", model="Wireless Remote Switch H1 (Single Rocker)"
-    #    )
+    # temporarily commented out due to potentially breaking existing blueprints
+    # .friendly_name(
+    #     manufacturer="Aqara", model="Wireless Remote Switch H1 (Single Rocker)"
+    # )
     .replaces(AqaraRemoteManuSpecificCluster)
     .replaces(MultistateInputCluster)
     .replaces(PowerConfigurationClusterH1Remote)
@@ -139,9 +140,10 @@ class PowerConfigurationClusterH1Remote(PowerConfigurationCluster):
 
 (
     QuirkBuilder(LUMI, "lumi.remote.b28ac1")
-    #    .friendly_name(
-    #        manufacturer="Aqara", model="Wireless Remote Switch H1 (Double Rocker)"
-    #    )
+    # temporarily commented out due to potentially breaking existing blueprints
+    # .friendly_name(
+    #     manufacturer="Aqara", model="Wireless Remote Switch H1 (Double Rocker)"
+    # )
     .replaces(AqaraRemoteManuSpecificCluster)
     .adds(Identify)
     .replaces(MultistateInputCluster)
