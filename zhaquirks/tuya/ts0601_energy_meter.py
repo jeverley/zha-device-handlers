@@ -1,7 +1,8 @@
 """Tuya Energy Meter."""
 
+from collections.abc import Callable
 from enum import Enum
-from typing import Any, Callable, Dict, Optional, Tuple, Type, Union
+from typing import Any, Dict, Optional, Tuple, Type, Union
 
 from zigpy.profiles import zgp, zha
 from zigpy.quirks import CustomDevice
