@@ -24,6 +24,7 @@ from zigpy.zcl.clusters.general import (
 from zigpy.zcl.clusters.homeautomation import ElectricalMeasurement
 from zigpy.zcl.clusters.measurement import (
     IlluminanceMeasurement,
+    OccupancySensing,
     PressureMeasurement,
     RelativeHumidity,
     TemperatureMeasurement,
@@ -47,6 +48,7 @@ from zhaquirks.const import (
     UNKNOWN,
     VALUE,
     ZHA_SEND_EVENT,
+    BatterySize,
 )
 
 BATTERY_LEVEL = "battery_level"
@@ -115,7 +117,7 @@ class XiaomiCustomDevice(CustomDevice):
     def __init__(self, *args, **kwargs):
         """Init."""
         if not hasattr(self, BATTERY_SIZE):
-            self.battery_size = 10
+            self.battery_size = BatterySize.CR2032
         super().__init__(*args, **kwargs)
 
 
@@ -389,7 +391,11 @@ class XiaomiCluster(CustomCluster):
             attribute_names.update({11: ILLUMINANCE_MEASUREMENT})
         elif self.endpoint.device.model == "lumi.curtain.acn002":
             attribute_names.update({101: BATTERY_PERCENTAGE_REMAINING_ATTRIBUTE})
-        elif self.endpoint.device.model in ["lumi.motion.agl02", "lumi.motion.ac02"]:
+        elif self.endpoint.device.model in [
+            "lumi.motion.agl02",
+            "lumi.motion.ac02",
+            "lumi.motion.acn001",
+        ]:
             attribute_names.update({101: ILLUMINANCE_MEASUREMENT})
             if self.endpoint.device.model == "lumi.motion.ac02":
                 attribute_names.update({105: DETECTION_INTERVAL})
@@ -464,6 +470,22 @@ class XiaomiAqaraE1Cluster(XiaomiCluster):
     ep_attribute = "opple_cluster"
 
 
+class XiaomiMotionManufacturerCluster(XiaomiAqaraE1Cluster):
+    """Xiaomi manufacturer cluster to parse motion and illuminance reports."""
+
+    def _update_attribute(self, attrid, value):
+        super()._update_attribute(attrid, value)
+        if attrid == 274:
+            value = value - 65536
+            self.endpoint.illuminance.update_attribute(
+                IlluminanceMeasurement.AttributeDefs.measured_value.id, value
+            )
+            self.endpoint.occupancy.update_attribute(
+                OccupancySensing.AttributeDefs.occupancy.id,
+                OccupancySensing.Occupancy.Occupied,
+            )
+
+
 class BinaryOutputInterlock(CustomCluster, BinaryOutput):
     """Xiaomi binaryoutput cluster with added interlock attribute."""
 
@@ -486,7 +508,9 @@ class XiaomiPowerConfiguration(PowerConfiguration, LocalDataCluster):
         super().__init__(*args, **kwargs)
         self._CONSTANT_ATTRIBUTES = {
             BATTERY_QUANTITY_ATTR: 1,
-            BATTERY_SIZE_ATTR: getattr(self.endpoint.device, BATTERY_SIZE, 0xFF),
+            BATTERY_SIZE_ATTR: getattr(
+                self.endpoint.device, BATTERY_SIZE, BatterySize.Unknown
+            ),
         }
         self._slope = 200 / (self.MAX_VOLTS_MV - self.MIN_VOLTS_MV)
 

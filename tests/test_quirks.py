@@ -14,8 +14,10 @@ import zigpy.device
 import zigpy.endpoint
 import zigpy.profiles
 import zigpy.quirks as zq
-from zigpy.quirks import CustomDevice
+from zigpy.quirks import CustomDevice, DeviceRegistry
+from zigpy.quirks.v2 import QuirkBuilder
 import zigpy.types
+from zigpy.zcl import foundation
 import zigpy.zdo.types
 
 import zhaquirks
@@ -58,7 +60,7 @@ import zhaquirks.xiaomi.aqara.vibration_aq1
 zhaquirks.setup()
 
 ALL_QUIRK_CLASSES = []
-for manufacturer in zq._DEVICE_REGISTRY._registry.values():
+for manufacturer in zq.DEVICE_REGISTRY.registry_v1.values():
     for model_quirk_list in manufacturer.values():
         for quirk in model_quirk_list:
             if quirk in ALL_QUIRK_CLASSES:
@@ -66,6 +68,7 @@ for manufacturer in zq._DEVICE_REGISTRY._registry.values():
             ALL_QUIRK_CLASSES.append(quirk)
 
 del quirk, model_quirk_list, manufacturer
+
 
 ALL_ZIGPY_CLUSTERS = frozenset(zcl.clusters.CLUSTERS_BY_NAME.values())
 
@@ -284,7 +287,8 @@ def test_dev_from_signature(
 
 
 @pytest.mark.parametrize(
-    "quirk", (q for q in ALL_QUIRK_CLASSES if issubclass(q, zhaquirks.QuickInitDevice))
+    "quirk",
+    (q for q in ALL_QUIRK_CLASSES if issubclass(q, zhaquirks.QuickInitDevice)),
 )
 def test_quirk_quickinit(quirk: zigpy.quirks.CustomDevice) -> None:
     """Make sure signature in QuickInit Devices have all required attributes."""
@@ -303,7 +307,10 @@ def test_quirk_quickinit(quirk: zigpy.quirks.CustomDevice) -> None:
         assert isinstance(ep_data[OUTPUT_CLUSTERS], list)
 
 
-@pytest.mark.parametrize("quirk", ALL_QUIRK_CLASSES)
+@pytest.mark.parametrize(
+    "quirk",
+    ALL_QUIRK_CLASSES,
+)
 def test_signature(quirk: CustomDevice) -> None:
     """Make sure signature look sane for all custom devices."""
 
@@ -576,7 +583,10 @@ def test_zigpy_custom_cluster_pollution() -> None:
         )
 
 
-@pytest.mark.parametrize("module_name", {q.__module__ for q in ALL_QUIRK_CLASSES})
+@pytest.mark.parametrize(
+    "module_name",
+    sorted({q.__module__ for q in ALL_QUIRK_CLASSES}),
+)
 def test_no_module_level_device_automation_triggers(module_name: str) -> None:
     """Ensure no quirk module has a module-level `device_automation_triggers` dict."""
 
@@ -641,12 +651,6 @@ KNOWN_DUPLICATE_TRIGGERS = {
             (zhaquirks.aurora.aurora_dimmer.COLOR_DOWN, const.LEFT),
         ],
     ],
-    zhaquirks.ikea.fourbtnremote.IkeaTradfriRemoteV1: [
-        [
-            (const.LONG_RELEASE, const.DIM_UP),
-            (const.LONG_RELEASE, const.DIM_DOWN),
-        ]
-    ],
     zhaquirks.paulmann.fourbtnremote.PaulmannRemote4Btn: [
         [
             (const.LONG_RELEASE, const.BUTTON_1),
@@ -666,6 +670,7 @@ KNOWN_DUPLICATE_TRIGGERS = {
 }
 
 
+# XXX: Test does not handle v2 quirks
 @pytest.mark.parametrize(
     "quirk",
     [q for q in ALL_QUIRK_CLASSES if getattr(q, "device_automation_triggers", None)],
@@ -830,3 +835,41 @@ def test_no_duplicate_clusters(quirk: CustomDevice) -> None:
     for ep_id, ep_data in quirk.replacement[ENDPOINTS].items():  # noqa: B007
         check_for_duplicate_cluster_ids(ep_data.get(INPUT_CLUSTERS, []))
         check_for_duplicate_cluster_ids(ep_data.get(OUTPUT_CLUSTERS, []))
+
+
+async def test_local_data_cluster(device_mock) -> None:
+    """Ensure reading attributes from a LocalDataCluster works as expected."""
+    registry = DeviceRegistry()
+
+    class TestLocalCluster(zhaquirks.LocalDataCluster):
+        """Test cluster."""
+
+        cluster_id = 0x1234
+        _CONSTANT_ATTRIBUTES = {1: 10}
+        _VALID_ATTRIBUTES = [2]
+
+    (
+        QuirkBuilder(device_mock.manufacturer, device_mock.model, registry=registry)
+        .adds(TestLocalCluster)
+        .add_to_registry()
+    )
+    device = registry.get_device(device_mock)
+    assert isinstance(device.endpoints[1].in_clusters[0x1234], TestLocalCluster)
+
+    # reading invalid attribute return unsupported attribute
+    assert await device.endpoints[1].in_clusters[0x1234].read_attributes([0]) == (
+        {},
+        {0: foundation.Status.UNSUPPORTED_ATTRIBUTE},
+    )
+
+    # reading constant attribute works
+    assert await device.endpoints[1].in_clusters[0x1234].read_attributes([1]) == (
+        {1: 10},
+        {},
+    )
+
+    # reading valid attribute returns None with success status
+    assert await device.endpoints[1].in_clusters[0x1234].read_attributes([2]) == (
+        {2: None},
+        {},
+    )

@@ -1,4 +1,5 @@
 """Quirk for LUMI lumi.motion.agl04."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -16,11 +17,12 @@ from zhaquirks.const import (
     MODELS_INFO,
     OUTPUT_CLUSTERS,
     PROFILE_ID,
+    BatterySize,
 )
 from zhaquirks.xiaomi import (
     DeviceTemperatureCluster,
-    LocalOccupancyCluster,
     MotionCluster,
+    OccupancyCluster,
     XiaomiAqaraE1Cluster,
     XiaomiCustomDevice,
     XiaomiPowerConfiguration,
@@ -63,7 +65,7 @@ class LumiLumiMotionAgl04(XiaomiCustomDevice):
 
     def __init__(self, *args, **kwargs):
         """Init."""
-        self.battery_size = 11
+        self.battery_size = BatterySize.CR1632
         self.battery_quantity = 2
         self.motion_bus = Bus()
         super().__init__(*args, **kwargs)
@@ -98,7 +100,7 @@ class LumiLumiMotionAgl04(XiaomiCustomDevice):
                     XiaomiPowerConfiguration,
                     Identify.cluster_id,
                     DeviceTemperatureCluster,
-                    LocalOccupancyCluster,
+                    OccupancyCluster,
                     LocalMotionCluster,
                     OppleCluster,
                 ],
