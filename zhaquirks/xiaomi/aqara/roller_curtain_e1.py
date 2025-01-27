@@ -326,6 +326,10 @@ class MultistateOutputRollerE1(CustomCluster, MultistateOutput):
     #    .friendly_name(
     #        manufacturer="Aqara", model="Roller Shade Driver E1"
     #    )
+    .prevent_default_entity_creation(endpoint_id=1, cluster_id=AnalogOutput.cluster_id)
+    .prevent_default_entity_creation(
+        endpoint_id=1, cluster_id=MultistateOutput.cluster_id
+    )
     .removes(OnOff.cluster_id)
     .replaces(AnalogOutputRollerE1)
     .replaces(BasicCluster)
