@@ -1775,47 +1775,6 @@ async def test_xiaomi_e1_roller_commands_2(zigpy_device_from_v2_quirk, command, 
 
 
 @pytest.mark.parametrize(
-    "attribute_id, device_value, converted_value",
-    [
-        (
-            zhaquirks.xiaomi.aqara.roller_curtain_e1.XiaomiAqaraRollerE1.AttributeDefs.charging.id,
-            zhaquirks.xiaomi.aqara.roller_curtain_e1.AqaraRollerDriverCharging.true,
-            t.Bool.true,
-        ),
-        (
-            zhaquirks.xiaomi.aqara.roller_curtain_e1.XiaomiAqaraRollerE1.AttributeDefs.charging.id,
-            zhaquirks.xiaomi.aqara.roller_curtain_e1.AqaraRollerDriverCharging.false,
-            t.Bool.false,
-        ),
-        (
-            zhaquirks.xiaomi.aqara.roller_curtain_e1.XiaomiAqaraRollerE1.AttributeDefs.charging.id,
-            3,
-            None,
-        ),
-    ],
-)
-async def test_xiaomi_e1_roller_bool_value_conversion(
-    zigpy_device_from_v2_quirk, attribute_id, device_value, converted_value
-):
-    """Test remap of Aqara values to binary_sensor bool values."""
-    device = zigpy_device_from_v2_quirk(LUMI, "lumi.curtain.acn002")
-
-    opple_cluster = device.endpoints[1].opple_cluster
-    opple_listener = ClusterListener(opple_cluster)
-
-    # update aqara attribute
-    opple_cluster.update_attribute(attribute_id, device_value)
-    if converted_value is None:
-        assert len(opple_listener.attribute_updates) == 0
-        return
-    assert len(opple_listener.attribute_updates) == 1
-
-    # confirm the aqara device value has been remapped to a t.Bool state
-    assert opple_listener.attribute_updates[0][0] == attribute_id
-    assert opple_listener.attribute_updates[0][1] == converted_value
-
-
-@pytest.mark.parametrize(
     "attr, expected_value, target_attr, target_cluster",
     [
         (

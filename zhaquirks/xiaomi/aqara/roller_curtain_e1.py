@@ -188,23 +188,6 @@ class XiaomiAqaraRollerE1(XiaomiAqaraE1Cluster):
             is_manufacturer_specific=True,
         )
 
-    @staticmethod
-    def _enum_value_to_bool(enum_type, value: Any) -> t.Bool | None:
-        """Return the t.Bool equivalent of enum mapped true/false values."""
-
-        if value == enum_type.true:
-            return t.Bool.true
-        if value == enum_type.false:
-            return t.Bool.false
-        return None
-
-    def _update_attribute(self, attrid: int, value: Any) -> None:
-        """Convert Aqara charging status values to binary_sensor charging true/false."""
-
-        if attrid == self.AttributeDefs.charging.id:
-            value = self._enum_value_to_bool(AqaraRollerDriverCharging, value)
-        super()._update_attribute(attrid, value)
-
 
 class AnalogOutputRollerE1(WriteAwareUpdateAttribute, CustomCluster, AnalogOutput):
     """Analog output cluster, only used to relay present_value to WindowCovering current_position_lift_percentage."""
@@ -350,6 +333,9 @@ class MultistateOutputRollerE1(CustomCluster, MultistateOutput):
         device_class=BinarySensorDeviceClass.BATTERY_CHARGING,
         translation_key="charging",
         fallback_name="Charging",
+        attribute_converter=lambda x: True
+        if x == AqaraRollerDriverCharging.true
+        else False,
     )
     .binary_sensor(
         XiaomiAqaraRollerE1.AttributeDefs.positions_stored.name,
