@@ -495,7 +495,7 @@ class TuyaQuirkBuilder(QuirkBuilder):
         self,
         dp_id: int,
         ep_attribute: str,
-        attribute_name: str,
+        attribute_name: str | tuple,
         converter: Optional[Callable[[Any], Any]] = None,
         dp_converter: Optional[Callable[[Any], Any]] = None,
         endpoint_id: Optional[int] = None,
@@ -519,7 +519,7 @@ class TuyaQuirkBuilder(QuirkBuilder):
     def tuya_dp_attribute(
         self,
         dp_id: int,
-        attribute_name: str,
+        attribute_name: str | tuple,
         ep_attribute: str = TuyaMCUCluster.ep_attribute,
         converter: Optional[Callable[[Any], Any]] = None,
         dp_converter: Optional[Callable[[Any], Any]] = None,
