@@ -356,6 +356,7 @@ base_tuya_motion = (
 (
     base_tuya_motion.clone()
     .applies_to("_TZE204_laokfqwu", "TS0601")
+    .applies_to("_TZE200_clrdrnya", "TS0601")
     .tuya_dp(
         dp_id=1,
         ep_attribute=TuyaOccupancySensing.ep_attribute,
@@ -965,7 +966,6 @@ base_tuya_motion = (
         attribute_name="tamper",
         device_class=BinarySensorDeviceClass.TAMPER,
         entity_type=EntityType.DIAGNOSTIC,
-        translation_key="tamper",
         fallback_name="Tamper",
     )
     .tuya_number(
@@ -1134,10 +1134,10 @@ base_tuya_motion = (
     )
     .tuya_enum(
         dp_id=10,
-        attribute_name="fade_time",
+        attribute_name="fading_time",
         enum_class=TuyaMotionFadeTime,
-        translation_key="fade_time",
-        fallback_name="Fade time",
+        translation_key="fading_time",
+        fallback_name="Fading time",
     )
     .tuya_illuminance(dp_id=12)
     .tuya_number(

@@ -229,7 +229,6 @@ class TuyaThermostatV2(Thermostat, TuyaAttributesCluster):
         dp_id=7,
         attribute_name="window_open",
         device_class=BinarySensorDeviceClass.WINDOW,
-        translation_key="window_open",
         fallback_name="Window open",
     )
     .tuya_switch(
@@ -248,6 +247,7 @@ class TuyaThermostatV2(Thermostat, TuyaAttributesCluster):
     .tuya_binary_sensor(
         dp_id=14,
         attribute_name="error_or_battery_low",
+        device_class=BinarySensorDeviceClass.PROBLEM,
         translation_key="error_or_battery_low",
         fallback_name="Error or battery low",
     )
@@ -358,6 +358,7 @@ class TuyaThermostatV2(Thermostat, TuyaAttributesCluster):
     .tuya_binary_sensor(
         dp_id=35,
         attribute_name="error_or_battery_low",
+        device_class=BinarySensorDeviceClass.PROBLEM,
         translation_key="error_or_battery_low",
         fallback_name="Error or battery low",
     )
