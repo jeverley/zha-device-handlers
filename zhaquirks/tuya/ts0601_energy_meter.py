@@ -165,6 +165,7 @@ class MeterClusterHelper:
         return getattr(
             self.endpoint.device.endpoints[endpoint_id],
             ep_attribute or self.ep_attribute,
+            None,
         )
 
     def get_config(self, attr_name: str, default: Any = None) -> Any:
@@ -184,6 +185,11 @@ class MeterClusterHelper:
         return getattr(
             self.endpoint.device.endpoints[1], TuyaMCUCluster.ep_attribute, None
         )
+
+    @property
+    def virtual(self) -> bool:
+        """Return True if the cluster channel is virtual."""
+        return self.channel in Channel.virtual_channels()
 
 
 class EnergyDirectionHelper(MeterClusterHelper):
@@ -243,9 +249,6 @@ class EnergyDirectionMitigationHelper(EnergyDirectionHelper, MeterClusterHelper)
     resulting in correct values, but a delay in attribute update equal to the update interval.
     """
 
-    HOLD = "hold"
-    RELEASE = "release"
-
     """Devices requiring energy direction mitigation."""
     _ENERGY_DIRECTION_MITIGATION_MATCHES: tuple[dict] = (
         {
@@ -279,12 +282,10 @@ class EnergyDirectionMitigationHelper(EnergyDirectionHelper, MeterClusterHelper)
             self._mitigation_required = self._evaluate_device_mitigation()
         return self._mitigation_required
 
-    def energy_direction_mitigation_handler(self, attr_name: str, value) -> str | None:
-        """Compensate for delay in reported energy direction."""
-        if (
-            attr_name.removesuffix(self.UNSIGNED_ATTR_SUFFIX)
-            not in self._EXTENSIVE_ATTRIBUTES
-            or self.energy_direction_mitigation
+    def energy_direction_mitigation_handler(self, attr_name: str, value: Any) -> Any:
+        """Hold the attribute value until the next update is received from the device."""
+        if self.virtual or (
+            self.energy_direction_mitigation
             not in (
                 EnergyDirectionMitigation.Automatic,
                 EnergyDirectionMitigation.Enabled,
@@ -292,42 +293,13 @@ class EnergyDirectionMitigationHelper(EnergyDirectionHelper, MeterClusterHelper)
             or self.energy_direction_mitigation == EnergyDirectionMitigation.Automatic
             and not self.energy_direction_mitigation_required
         ):
-            return None
+            if attr_name in self._held_values:
+                self._held_values.remove(attr_name)
+            return value
 
-        return self.RELEASE
-        # action = self._mitigation_action(attr_name, value, trigger_channel)
-        # if action != self.RELEASE:
-        #    self._store_value(attr_name, value)
-        # if action != self.PREEMPT:
-        #    return action
-        # self._release_held_values(attr_name, source_channels, trigger_channel)
-        # return action
-
-    def _mitigation_action(
-        self, attr_name: str, value: int, trigger_channel: Channel
-    ) -> str:
-        """Return the action for the energy direction mitigation handler."""
-        return self.RELEASE
-
-    def _get_held_value(self, attr_name: str) -> int | None:
-        """Retrieve the held attribute value."""
-        return self._held_values.get(attr_name, None)
-
-    def _store_value(self, attr_name: str, value: int | None):
-        """Store the update value."""
+        held_value = self._held_values.get(attr_name, None)
         self._held_values[attr_name] = value
-
-    def _release_held_values(
-        self, attr_name: str, source_channels: tuple[Channel], trigger_channel: Channel
-    ):
-        """Release held values to update the cluster attributes."""
-        for channel in source_channels:
-            cluster = self.get_cluster(channel)
-            if channel != trigger_channel:
-                value = cluster._get_held_value(attr_name)
-                if value is not None:
-                    cluster.update_attribute(attr_name, value)
-            cluster._store_value(attr_name, None)
+        return held_value
 
     def _evaluate_device_mitigation(self) -> bool:
         """Return True if the device requires energy direction mitigation."""
@@ -354,8 +326,8 @@ class VirtualChannelHelper(EnergyDirectionHelper, MeterClusterHelper):
 
     """Map of virtual channels to their trigger channel and calculation method."""
     _VIRTUAL_CHANNEL_CALCULATIONS: dict[
-        tuple[Channel, VirtualChannelConfig | None],
-        tuple[tuple[Channel], Callable | None, Channel | None],
+        tuple[Channel, VirtualChannelConfig],
+        tuple[tuple[Channel], Callable, Channel | None],
     ] = {
         (Channel.AB, VirtualChannelConfig.A_plus_B): (
             (Channel.A, Channel.B),
@@ -375,11 +347,6 @@ class VirtualChannelHelper(EnergyDirectionHelper, MeterClusterHelper):
     }
 
     @property
-    def virtual(self) -> bool:
-        """Return True if the cluster channel is virtual."""
-        return self.channel in Channel.virtual_channels()
-
-    @property
     def virtual_channel_config(self) -> VirtualChannelConfig | None:
         """Return the virtual channel configuration."""
         return self.get_config(
@@ -392,6 +359,9 @@ class VirtualChannelHelper(EnergyDirectionHelper, MeterClusterHelper):
         if self.virtual or attr_name not in self._EXTENSIVE_ATTRIBUTES:
             return
         for channel in self._device_virtual_channels:
+            virtual_cluster = self.get_cluster(channel)
+            if not virtual_cluster:
+                continue
             source_channels, method, trigger_channel = (
                 self._VIRTUAL_CHANNEL_CALCULATIONS.get(
                     (channel, self.virtual_channel_config), (None, None, None)
@@ -400,7 +370,6 @@ class VirtualChannelHelper(EnergyDirectionHelper, MeterClusterHelper):
             if trigger_channel is not None and self.channel != trigger_channel:
                 continue
             value = self._calculate_virtual_value(attr_name, source_channels, method)
-            virtual_cluster = self.get_cluster(channel)
             virtual_cluster.update_attribute(attr_name, value)
 
     def _calculate_virtual_value(
@@ -502,11 +471,7 @@ class TuyaElectricalMeasurement(
 
     def update_attribute(self, attr_name: str, value):
         """Update the cluster attribute."""
-        if (
-            self.energy_direction_mitigation_handler(attr_name, value)
-            == EnergyDirectionMitigationHelper.HOLD
-        ):
-            return
+        value = self.energy_direction_mitigation_handler(attr_name, value)
         attr_name, value = self.energy_direction_handler(attr_name, value)
         super().update_attribute(attr_name, value)
         self._update_measurement_type(attr_name)
@@ -563,11 +528,7 @@ class TuyaMetering(
 
     def update_attribute(self, attr_name: str, value):
         """Update the cluster attribute."""
-        if (
-            self.energy_direction_mitigation_handler(attr_name, value)
-            == EnergyDirectionMitigationHelper.HOLD
-        ):
-            return
+        value = self.energy_direction_mitigation_handler(attr_name, value)
         attr_name, value = self.energy_direction_handler(attr_name, value)
         super().update_attribute(attr_name, value)
         self.virtual_channel_handler(attr_name)
@@ -757,14 +718,14 @@ class TuyaMetering(
     )
     .tuya_number(
         dp_id=116,
-        attribute_name="update_interval",
+        attribute_name="reporting_interval",
         type=t.uint32_t_be,
         unit=UnitOfTime.SECONDS,
         min_value=5,
         max_value=60,
         step=1,
-        translation_key="update_interval",
-        fallback_name="Update Interval",
+        translation_key="reporting_interval",
+        fallback_name="Reporting interval",
         entity_type=EntityType.CONFIG,
     )
     .add_to_registry()
@@ -885,14 +846,14 @@ class TuyaMetering(
     )
     .tuya_number(
         dp_id=129,
-        attribute_name="update_interval",
+        attribute_name="reporting_interval",
         type=t.uint32_t_be,
         unit=UnitOfTime.SECONDS,
         min_value=5,
         max_value=60,
         step=1,
-        translation_key="update_interval",
-        fallback_name="Update Interval",
+        translation_key="reporting_interval",
+        fallback_name="Reporting interval",
         entity_type=EntityType.CONFIG,
     )
     .tuya_number(
@@ -902,7 +863,7 @@ class TuyaMetering(
         # unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
-        step=1,
+        step=0.1,
         multiplier=0.1,
         translation_key="calibrate_ac_frequency",
         fallback_name="Calibrate AC frequency",
@@ -916,7 +877,7 @@ class TuyaMetering(
         # unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
-        step=1,
+        step=0.1,
         multiplier=0.1,
         translation_key="calibrate_summ_delivered",
         fallback_name="Calibrate summation delivered",
@@ -931,7 +892,7 @@ class TuyaMetering(
         # unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
-        step=1,
+        step=0.1,
         multiplier=0.1,
         translation_key="calibrate_summ_delivered_b",
         fallback_name="Calibrate summation delivered B",
@@ -945,7 +906,7 @@ class TuyaMetering(
         # unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
-        step=1,
+        step=0.1,
         multiplier=0.1,
         translation_key="calibrate_summ_received",
         fallback_name="Calibrate summation received",
@@ -960,7 +921,7 @@ class TuyaMetering(
         # unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
-        step=1,
+        step=0.1,
         multiplier=0.1,
         translation_key="calibrate_summ_received_b",
         fallback_name="Calibrate summation received B",
@@ -974,7 +935,7 @@ class TuyaMetering(
         # unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
-        step=1,
+        step=0.1,
         multiplier=0.1,
         translation_key="calibrate_instantaneous_demand",
         fallback_name="Calibrate instantaneous demand",
@@ -989,7 +950,7 @@ class TuyaMetering(
         # unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
-        step=1,
+        step=0.1,
         multiplier=0.1,
         translation_key="calibrate_instantaneous_demand_b",
         fallback_name="Calibrate instantaneous demand B",
@@ -1003,7 +964,7 @@ class TuyaMetering(
         # unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
-        step=1,
+        step=0.1,
         multiplier=0.1,
         translation_key="calibrate_current",
         fallback_name="Calibrate current",
@@ -1017,7 +978,7 @@ class TuyaMetering(
         # unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
-        step=1,
+        step=0.1,
         multiplier=0.1,
         translation_key="calibrate_current_b",
         fallback_name="Calibrate current B",
@@ -1031,7 +992,7 @@ class TuyaMetering(
         # unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
-        step=1,
+        step=0.1,
         multiplier=0.1,
         translation_key="calibrate_voltage",
         fallback_name="Calibrate voltage",
