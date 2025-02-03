@@ -521,7 +521,7 @@ class TuyaMetering(
 (
     ### Tuya PJ-MGW1203 1 channel energy meter.
     TuyaQuirkBuilder("_TZE204_cjbofhxw", "TS0601")
-    # .tuya_enchantment()
+    .tuya_enchantment()
     .adds(EnergyMeterConfiguration)
     .adds(TuyaElectricalMeasurement)
     .adds(TuyaMetering)
@@ -554,7 +554,7 @@ class TuyaMetering(
 (
     ### Tuya bidirectional 1 channel energy meter with Zigbee Green Power.
     TuyaQuirkBuilder("_TZE204_ac0fhfiq", "TS0601")
-    # .tuya_enchantment()
+    .tuya_enchantment()
     .adds(EnergyMeterConfiguration)
     .adds(TuyaElectricalMeasurement)
     .adds(TuyaMetering)
@@ -611,7 +611,7 @@ class TuyaMetering(
 (
     ### EARU Tuya 2 channel bidirectional energy meter manufacturer cluster.
     TuyaQuirkBuilder("_TZE200_rks0sgb7", "TS0601")
-    # .tuya_enchantment()
+    .tuya_enchantment()
     .adds_endpoint(Channel.B)
     .adds_endpoint(Channel.AB)
     .adds(EnergyMeterConfiguration)
@@ -729,7 +729,7 @@ class TuyaMetering(
 (
     ### MatSee Plus Tuya PJ-1203A 2 channel bidirectional energy meter with Zigbee Green Power.
     TuyaQuirkBuilder("_TZE204_81yrt3lo", "TS0601")
-    # .tuya_enchantment()
+    .tuya_enchantment()
     .adds_endpoint(Channel.B)
     .adds_endpoint(Channel.AB)
     .adds(EnergyMeterConfiguration)
