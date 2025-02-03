@@ -220,15 +220,6 @@ class EnergyDirectionHelper(MeterClusterHelper):
         except KeyError:
             return None
 
-    @energy_direction.setter
-    def energy_direction(self, value: TuyaEnergyDirection):
-        """Update the channel energy direction."""
-        if not self.mcu_cluster:
-            return
-        self.mcu_cluster.update_attribute(
-            ENERGY_DIRECTION + Channel.attr_suffix(self.channel)
-        )
-
     def energy_direction_handler(self, attr_name: str, value) -> tuple[str, Any]:
         """Unsigned attributes are aligned with energy direction."""
         if attr_name.endswith(self.UNSIGNED_ATTR_SUFFIX):

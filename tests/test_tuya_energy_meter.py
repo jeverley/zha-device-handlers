@@ -1,6 +1,7 @@
 """Tests for Tuya quirks."""
 
 import pytest
+from zigpy.zcl.clusters.general import Basic
 from zigpy.zcl.clusters.homeautomation import ElectricalMeasurement
 from zigpy.zcl.clusters.smartenergy import Metering
 
@@ -42,9 +43,9 @@ async def test_tuya_energy_meter_quirk_energy_direction_align(
     FORWARD = 0
     REVERSE = 1
 
-    CH_A = 1
-    CH_B = 2
-    CH_AB = 11
+    CHANNEL_A = 1
+    CHANNEL_B = 2
+    CHANNEL_AB = 11
 
     UNSIGNED_ATTR_SUFFIX = "_attr_unsigned"
 
@@ -100,7 +101,7 @@ async def test_tuya_energy_meter_quirk_energy_direction_align(
         )
         assert attr is None
 
-    if bidirectional and CH_B in channels:
+    if bidirectional and CHANNEL_B in channels:
         # verify the direction B attribute is present
         attr = getattr(
             ep.tuya_manufacturer.AttributeDefs,
@@ -115,7 +116,7 @@ async def test_tuya_energy_meter_quirk_energy_direction_align(
         assert mcu_listener.attribute_updates[1][0] == attr.id
         assert mcu_listener.attribute_updates[1][1] == DIRECTION_B
 
-    if CH_AB in channels:
+    if CHANNEL_AB in channels:
         # verify the config cluster is present
         channel_ep = quirked_device.endpoints[1]
         assert channel_ep.energy_meter_config is not None
@@ -139,11 +140,11 @@ async def test_tuya_energy_meter_quirk_energy_direction_align(
         )
 
     for channel in channels:
-        if channel == CH_A:
+        if channel == CHANNEL_A:
             direction = DIRECTION_A
-        elif channel == CH_B:
+        elif channel == CHANNEL_B:
             direction = DIRECTION_B
-        elif channel == CH_AB:
+        elif channel == CHANNEL_AB:
             # updates to channel AB will occur as a result of the device updates to channels A & B
             continue
         assert direction is not None
@@ -230,40 +231,193 @@ async def test_tuya_energy_meter_quirk_energy_direction_align(
         )
         assert listeners[channel]["metering"].attribute_updates[1][1] == SUMM_RECEIVED
 
-    if CH_AB in channels:
+    if CHANNEL_AB in channels:
         # verify the ElectricalMeasurement attributes were updated correctly
-        assert len(listeners[CH_AB]["electrical_measurement"].attribute_updates) == 3
         assert (
-            listeners[CH_AB]["electrical_measurement"].attribute_updates[0][0]
+            len(listeners[CHANNEL_AB]["electrical_measurement"].attribute_updates) == 3
+        )
+        assert (
+            listeners[CHANNEL_AB]["electrical_measurement"].attribute_updates[0][0]
             == ElectricalMeasurement.AttributeDefs.rms_current.id
         )
         assert (
-            listeners[CH_AB]["electrical_measurement"].attribute_updates[0][1]
+            listeners[CHANNEL_AB]["electrical_measurement"].attribute_updates[0][1]
             == -CURRENT + CURRENT  # -CURRENT + CURRENT = 0
         )
         assert (
-            listeners[CH_AB]["electrical_measurement"].attribute_updates[1][0]
+            listeners[CHANNEL_AB]["electrical_measurement"].attribute_updates[1][0]
             == ElectricalMeasurement.AttributeDefs.active_power.id
         )
         assert (
-            listeners[CH_AB]["electrical_measurement"].attribute_updates[1][1] == 0
+            listeners[CHANNEL_AB]["electrical_measurement"].attribute_updates[1][1] == 0
         )  # -POWER + POWER = 0
         assert (
-            listeners[CH_AB]["electrical_measurement"].attribute_updates[2][0]
+            listeners[CHANNEL_AB]["electrical_measurement"].attribute_updates[2][0]
             == ElectricalMeasurement.AttributeDefs.measurement_type.id
         )
         assert (
-            listeners[CH_AB]["electrical_measurement"].attribute_updates[2][1]
+            listeners[CHANNEL_AB]["electrical_measurement"].attribute_updates[2][1]
             == ElectricalMeasurement.MeasurementType.Active_measurement_AC
             | ElectricalMeasurement.MeasurementType.Phase_A_measurement  # updated by the _update_measurement_type function
         )
 
         # verify the Metering attributes were updated correctly
-        assert len(listeners[CH_AB]["metering"].attribute_updates) == 1
+        assert len(listeners[CHANNEL_AB]["metering"].attribute_updates) == 1
         assert (
-            listeners[CH_AB]["metering"].attribute_updates[0][0]
+            listeners[CHANNEL_AB]["metering"].attribute_updates[0][0]
             == Metering.AttributeDefs.instantaneous_demand.id
         )
         assert (
-            listeners[CH_AB]["metering"].attribute_updates[0][1] == 0
+            listeners[CHANNEL_AB]["metering"].attribute_updates[0][1] == 0
         )  # -POWER + POWER = 0
+
+
+@pytest.mark.parametrize(
+    "model,manuf,mitigation_config,basic_cluster_match",
+    [
+        ("_TZE204_cjbofhxw", "TS0601", 0, None),  # Automatic
+        ("_TZE204_ac0fhfiq", "TS0601", 0, None),  # Automatic
+        ("_TZE200_rks0sgb7", "TS0601", 1, None),  # Disabled
+        ("_TZE204_81yrt3lo", "TS0601", 2, None),  # Enabled
+        (
+            "_TZE204_81yrt3lo",
+            "TS0601",
+            0,  # Automatic
+            {
+                "app_version": 74,
+                "hw_version": 1,
+                "stack_version": 0,
+            },
+        ),
+    ],
+)
+async def test_tuya_energy_meter_quirk_energy_direction_delay_mitigation(
+    zigpy_device_from_v2_quirk,
+    model: str,
+    manuf: str,
+    mitigation_config: None | int,
+    basic_cluster_match: dict,
+):
+    """Test Tuya Energy Meter Quirk energy direction report mitigation."""
+    quirked_device = zigpy_device_from_v2_quirk(model, manuf)
+
+    UNSIGNED_ATTR_SUFFIX = "_attr_unsigned"
+
+    POWER_1 = 100
+    POWER_2 = 200
+    POWER_3 = 300
+
+    AUTOMATIC = 0
+    DISABLED = 1
+    ENABLED = 2
+
+    ep = quirked_device.endpoints[1]
+
+    # verify the config cluster is present
+    assert ep.energy_meter_config is not None
+    assert isinstance(ep.energy_meter_config, LocalDataCluster)
+
+    # set the mitigation config value
+    config_listener = ClusterListener(ep.energy_meter_config)
+    ep.energy_meter_config.update_attribute(
+        ep.energy_meter_config.AttributeDefs.energy_direction_mitigation.id,
+        mitigation_config,
+    )
+    assert len(config_listener.attribute_updates) == 1
+    assert (
+        config_listener.attribute_updates[0][0]
+        == ep.energy_meter_config.AttributeDefs.energy_direction_mitigation.id
+    )
+    assert config_listener.attribute_updates[0][1] == mitigation_config
+
+    if basic_cluster_match:
+        # verify the basic cluster is present
+        assert ep.basic is not None
+        assert isinstance(ep.basic, Basic)
+
+        # populate match details for automatic mitigation
+        basic_listener = ClusterListener(ep.basic)
+        ep.basic.update_attribute(
+            Basic.AttributeDefs.app_version.id,
+            basic_cluster_match["app_version"],
+        )
+        ep.basic.update_attribute(
+            Basic.AttributeDefs.hw_version.id,
+            basic_cluster_match["hw_version"],
+        )
+        ep.basic.update_attribute(
+            Basic.AttributeDefs.stack_version.id,
+            basic_cluster_match["stack_version"],
+        )
+        assert len(basic_listener.attribute_updates) == 3
+        assert (
+            basic_listener.attribute_updates[0][0] == Basic.AttributeDefs.app_version.id
+        )
+        assert (
+            basic_listener.attribute_updates[0][1] == basic_cluster_match["app_version"]
+        )
+        assert (
+            basic_listener.attribute_updates[1][0] == Basic.AttributeDefs.hw_version.id
+        )
+        assert (
+            basic_listener.attribute_updates[1][1] == basic_cluster_match["hw_version"]
+        )
+        assert (
+            basic_listener.attribute_updates[2][0]
+            == Basic.AttributeDefs.stack_version.id
+        )
+        assert (
+            basic_listener.attribute_updates[2][1]
+            == basic_cluster_match["stack_version"]
+        )
+
+    # verify the reporting cluster is present
+    assert ep.smartenergy_metering is not None
+    assert isinstance(ep.smartenergy_metering, Metering)
+
+    # update the reporting cluster
+    metering_listener = ClusterListener(ep.smartenergy_metering)
+    ep.smartenergy_metering.update_attribute(
+        Metering.AttributeDefs.instantaneous_demand.name + UNSIGNED_ATTR_SUFFIX,
+        POWER_1,
+    )
+    ep.smartenergy_metering.update_attribute(
+        Metering.AttributeDefs.instantaneous_demand.name + UNSIGNED_ATTR_SUFFIX,
+        POWER_2,
+    )
+    ep.smartenergy_metering.update_attribute(
+        Metering.AttributeDefs.instantaneous_demand.name + UNSIGNED_ATTR_SUFFIX,
+        POWER_3,
+    )
+
+    # cluster values are delayed until their next update when the mitigation is active
+    assert (
+        len(metering_listener.attribute_updates) == 3
+        if mitigation_config == DISABLED
+        or mitigation_config == AUTOMATIC
+        and not basic_cluster_match
+        else 2
+    )
+
+    assert (
+        metering_listener.attribute_updates[0][0]
+        == Metering.AttributeDefs.instantaneous_demand.id
+    )
+    assert metering_listener.attribute_updates[0][1] == POWER_1
+
+    assert (
+        metering_listener.attribute_updates[1][0]
+        == Metering.AttributeDefs.instantaneous_demand.id
+    )
+    assert metering_listener.attribute_updates[1][1] == POWER_2
+
+    if (
+        mitigation_config == DISABLED
+        or mitigation_config == AUTOMATIC
+        and not basic_cluster_match
+    ):
+        assert (
+            metering_listener.attribute_updates[2][0]
+            == Metering.AttributeDefs.instantaneous_demand.id
+        )
+        assert metering_listener.attribute_updates[2][1] == POWER_3
