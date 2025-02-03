@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Final
 
-from zigpy.quirks.v2.homeassistant import EntityType, PERCENTAGE, UnitOfTime
+from zigpy.quirks.v2.homeassistant import PERCENTAGE, EntityType, UnitOfTime
 import zigpy.types as t
 from zigpy.zcl import Cluster
 from zigpy.zcl.clusters.homeautomation import MeasurementType
