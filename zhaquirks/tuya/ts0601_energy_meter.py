@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Final
 
-from zigpy.quirks.v2.homeassistant import EntityType, UnitOfTime
+from zigpy.quirks.v2.homeassistant import EntityType, UnitOfTime  # , PERCENTAGE
 import zigpy.types as t
 from zigpy.zcl import Cluster
 from zigpy.zcl.clusters.homeautomation import MeasurementType
@@ -53,20 +53,6 @@ class TuyaPowerFlow(t.enum1):
 
     Forward = 0x0
     Reverse = 0x1
-
-    @classmethod
-    def align_value(
-        cls, value: int | None, power_flow: TuyaPowerFlow | None
-    ) -> int | None:
-        """Align the value with power_flow direction."""
-        if value and (
-            power_flow == cls.Reverse
-            and value > 0
-            or power_flow == cls.Forward
-            and value < 0
-        ):
-            value = -value
-        return value
 
 
 class TuyaPowerPhase:
@@ -205,6 +191,17 @@ class PowerFlowHelper(MeterClusterHelper):
 
     UNSIGNED_ATTR_SUFFIX: Final = "_attr_unsigned"
 
+    def align_with_power_flow(self, value: int | None) -> int | None:
+        """Align the value with current power_flow direction."""
+        if value and (
+            self.power_flow == TuyaPowerFlow.Reverse
+            and value > 0
+            or self.power_flow == TuyaPowerFlow.Forward
+            and value < 0
+        ):
+            value = -value
+        return value
+
     @property
     def power_flow(self) -> TuyaPowerFlow | None:
         """Return the channel power flow direction."""
@@ -228,7 +225,7 @@ class PowerFlowHelper(MeterClusterHelper):
         """Unsigned attributes are aligned with power flow direction."""
         if attr_name.endswith(self.UNSIGNED_ATTR_SUFFIX):
             attr_name = attr_name.removesuffix(self.UNSIGNED_ATTR_SUFFIX)
-            value = TuyaPowerFlow.align_value(value, self.power_flow)
+            value = self.align_with_power_flow(value)
         return attr_name, value
 
 
@@ -353,6 +350,28 @@ class PowerFlowMitigationHelper(PowerFlowHelper, MeterClusterHelper):
 class VirtualChannelHelper(PowerFlowHelper, MeterClusterHelper):
     """Methods for calculating virtual energy meter channel attributes."""
 
+    """Map of virtual channels to their trigger channel and calculation method."""
+    _VIRTUAL_CHANNEL_CALCULATIONS: dict[
+        tuple[Channel, VirtualChannelConfig | None],
+        tuple[tuple[Channel], Callable | None, Channel | None],
+    ] = {
+        (Channel.AB, VirtualChannelConfig.A_plus_B): (
+            (Channel.A, Channel.B),
+            lambda a, b: a + b,
+            Channel.B,
+        ),
+        (Channel.AB, VirtualChannelConfig.A_minus_B): (
+            (Channel.A, Channel.B),
+            lambda a, b: a - b,
+            Channel.B,
+        ),
+        (Channel.AB, VirtualChannelConfig.B_minus_A): (
+            (Channel.A, Channel.B),
+            lambda a, b: b - a,
+            Channel.B,
+        ),
+    }
+
     @property
     def virtual(self) -> bool:
         """Return True if the cluster channel is virtual."""
@@ -371,30 +390,30 @@ class VirtualChannelHelper(PowerFlowHelper, MeterClusterHelper):
         if self.virtual or attr_name not in self._EXTENSIVE_ATTRIBUTES:
             return
         for channel in self._device_virtual_channels:
-            trigger_channel, method = self._VIRTUAL_CHANNEL_CONFIGURATION.get(
-                (channel, self.virtual_channel_config), None
+            source_channels, method, trigger_channel = (
+                self._VIRTUAL_CHANNEL_CALCULATIONS.get(
+                    (channel, self.virtual_channel_config), (None, None, None)
+                )
             )
-            if self.channel != trigger_channel:
+            if trigger_channel is not None and self.channel != trigger_channel:
                 continue
-            value = method(self, attr_name) if method else None
+            value = self._calculate_virtual_value(attr_name, source_channels, method)
             virtual_cluster = self.get_cluster(channel)
             virtual_cluster.update_attribute(attr_name, value)
 
-    def _is_attr_uint(self, attr_name: str) -> bool:
-        """Return True if the attribute type is an unsigned integer."""
-        return issubclass(getattr(self.AttributeDefs, attr_name).type, t.uint_t)
-
-    def _retrieve_source_values(
-        self, attr_name: str, channels: tuple[Channel]
-    ) -> tuple:
-        """Retrieve source values from channel clusters."""
-        return tuple(
-            TuyaPowerFlow.align_value(cluster.get(attr_name), cluster.power_flow)
-            if attr_name in self._EXTENSIVE_ATTRIBUTES and self._is_attr_uint(attr_name)
-            else cluster.get(attr_name)
-            for channel in channels
-            for cluster in [self.get_cluster(channel)]
-        )
+    def _calculate_virtual_value(
+        self,
+        attr_name: str,
+        source_channels: tuple[Channel] | None,
+        method: Callable | None,
+    ) -> int | None:
+        """Calculate virtual channel value from source channels."""
+        if source_channels is None or method is None:
+            return None
+        source_values = self._get_source_values(attr_name, source_channels)
+        if None in source_values:
+            return None
+        return method(*source_values)
 
     @property
     def _device_virtual_channels(self) -> set[Channel]:
@@ -403,52 +422,24 @@ class VirtualChannelHelper(PowerFlowHelper, MeterClusterHelper):
             self.endpoint.device.endpoints.keys()
         )
 
-    def _virtual_a_plus_b(self, attr_name: str) -> int | None:
-        """Calculate virtual channel value for A_plus_B configuration."""
-        value_a, value_b = self._retrieve_source_values(
-            attr_name, (Channel.A, Channel.B)
-        )
-        if None in (value_a, value_b):
-            return None
-        return value_a + value_b
+    def _is_attr_uint(self, attr_name: str) -> bool:
+        """Return True if the attribute type is an unsigned integer."""
+        return issubclass(getattr(self.AttributeDefs, attr_name).type, t.uint_t)
 
-    def _virtual_a_minus_b(self, attr_name: str) -> int | None:
-        """Calculate virtual channel value for A_minus_B configuration."""
-        value_a, value_b = self._retrieve_source_values(
-            attr_name, (Channel.A, Channel.B)
+    def _get_source_values(
+        self,
+        attr_name: str,
+        channels: tuple[Channel],
+        align_uint_with_power_flow: bool = True,
+    ) -> tuple:
+        """Get source values from channel clusters."""
+        return tuple(
+            cluster.align_with_power_flow(cluster.get(attr_name))
+            if align_uint_with_power_flow and self._is_attr_uint(attr_name)
+            else cluster.get(attr_name)
+            for channel in channels
+            for cluster in [self.get_cluster(channel)]
         )
-        if None in (value_a, value_b):
-            return None
-        return value_a - value_b
-
-    def _virtual_b_minus_a(self, attr_name: str) -> int | None:
-        """Calculate virtual channel value for A_minus_B configuration."""
-        value_a, value_b = self._retrieve_source_values(
-            attr_name, (Channel.A, Channel.B)
-        )
-        if None in (value_a, value_b):
-            return None
-        return value_b - value_a
-
-    """Map of virtual channels to their trigger channel and calculation method."""
-    _VIRTUAL_CHANNEL_CONFIGURATION: dict[
-        tuple[Channel, VirtualChannelConfig | None],
-        tuple[Channel, Callable | None],
-    ] = {
-        (Channel.AB, VirtualChannelConfig.A_plus_B): (
-            Channel.B,
-            _virtual_a_plus_b,
-        ),
-        (Channel.AB, VirtualChannelConfig.A_minus_B): (
-            Channel.B,
-            _virtual_a_minus_b,
-        ),
-        (Channel.AB, VirtualChannelConfig.B_minus_A): (
-            Channel.B,
-            _virtual_b_minus_a,
-        ),
-        (Channel.AB, VirtualChannelConfig.none): (Channel.B, None),
-    }
 
 
 class TuyaElectricalMeasurement(
@@ -620,12 +611,6 @@ class TuyaMetering(
     .adds(EnergyMeterConfiguration)
     .adds(TuyaElectricalMeasurement)
     .adds(TuyaMetering)
-    .tuya_dp_attribute(
-        dp_id=102,
-        attribute_name=POWER_FLOW,
-        type=TuyaPowerFlow,
-        converter=lambda x: TuyaPowerFlow(x),
-    )
     .tuya_dp(
         dp_id=101,
         ep_attribute=TuyaMetering.ep_attribute,
@@ -656,6 +641,12 @@ class TuyaMetering(
         ),
         converter=lambda x: TuyaPowerPhase.variant_3(x),
     )
+    .tuya_dp_attribute(
+        dp_id=102,
+        attribute_name=POWER_FLOW,
+        type=TuyaPowerFlow,
+        converter=lambda x: TuyaPowerFlow(x),
+    )
     .add_to_registry()
 )
 
@@ -679,19 +670,7 @@ class TuyaMetering(
         EnergyMeterConfiguration.cluster_id,
         entity_type=EntityType.CONFIG,
         translation_key="virtual_channel_config",
-        fallback_name="Virtual Channel",
-    )
-    .tuya_dp_attribute(
-        dp_id=114,
-        attribute_name=POWER_FLOW,
-        type=TuyaPowerFlow,
-        converter=lambda x: TuyaPowerFlow(x),
-    )
-    .tuya_dp_attribute(
-        dp_id=115,
-        attribute_name=POWER_FLOW + Channel.attr_suffix(Channel.B),
-        type=TuyaPowerFlow,
-        converter=lambda x: TuyaPowerFlow(x),
+        fallback_name="Virtual channel",
     )
     .tuya_dp(
         dp_id=113,
@@ -762,6 +741,18 @@ class TuyaMetering(
         ep_attribute=TuyaElectricalMeasurement.ep_attribute,
         attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_voltage.name,
     )
+    .tuya_dp_attribute(
+        dp_id=114,
+        attribute_name=POWER_FLOW,
+        type=TuyaPowerFlow,
+        converter=lambda x: TuyaPowerFlow(x),
+    )
+    .tuya_dp_attribute(
+        dp_id=115,
+        attribute_name=POWER_FLOW + Channel.attr_suffix(Channel.B),
+        type=TuyaPowerFlow,
+        converter=lambda x: TuyaPowerFlow(x),
+    )
     .tuya_number(
         dp_id=116,
         attribute_name="update_interval",
@@ -797,27 +788,15 @@ class TuyaMetering(
         EnergyMeterConfiguration.cluster_id,
         entity_type=EntityType.CONFIG,
         translation_key="virtual_channel_config",
-        fallback_name="Virtual Channel",
+        fallback_name="Virtual channel",
     )
     .enum(
         EnergyMeterConfiguration.AttributeDefs.power_flow_mitigation.name,
         PowerFlowMitigation,
         EnergyMeterConfiguration.cluster_id,
         entity_type=EntityType.CONFIG,
-        translation_key="power_flow_mitigation",
-        fallback_name="Power Flow delay mitigation",
-    )
-    .tuya_dp_attribute(
-        dp_id=102,
-        attribute_name=POWER_FLOW,
-        type=TuyaPowerFlow,
-        converter=lambda x: TuyaPowerFlow(x),
-    )
-    .tuya_dp_attribute(
-        dp_id=104,
-        attribute_name=POWER_FLOW + Channel.attr_suffix(Channel.B),
-        type=TuyaPowerFlow,
-        converter=lambda x: TuyaPowerFlow(x),
+        translation_key="power_flow_delay_mitigation",
+        fallback_name="Power flow delay mitigation",
     )
     .tuya_dp(
         dp_id=111,
@@ -890,6 +869,18 @@ class TuyaMetering(
         ep_attribute=TuyaElectricalMeasurement.ep_attribute,
         attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_voltage.name,
     )
+    .tuya_dp_attribute(
+        dp_id=102,
+        attribute_name=POWER_FLOW,
+        type=TuyaPowerFlow,
+        converter=lambda x: TuyaPowerFlow(x),
+    )
+    .tuya_dp_attribute(
+        dp_id=104,
+        attribute_name=POWER_FLOW + Channel.attr_suffix(Channel.B),
+        type=TuyaPowerFlow,
+        converter=lambda x: TuyaPowerFlow(x),
+    )
     .tuya_number(
         dp_id=129,
         attribute_name="update_interval",
@@ -902,135 +893,148 @@ class TuyaMetering(
         fallback_name="Update Interval",
         entity_type=EntityType.CONFIG,
     )
-    # .tuya_number(
-    #    dp_id=122,
-    #    attribute_name="ac_frequency_coefficient",
-    #    type=t.uint32_t_be,
-    #    # unit=PERCENTAGE,
-    #    min_value=500,
-    #    max_value=1500,
-    #    step=1,
-    #    multiplier=0.1,
-    #    translation_key="ac_frequency_calibration",
-    #    fallback_name="AC Frequency Calibration",
-    #    entity_type=EntityType.CONFIG,
-    # )
-    # .tuya_number(
-    #    dp_id=119,
-    #    attribute_name="current_summ_delivered_coefficient",
-    #    type=t.uint32_t_be,
-    #    # unit=PERCENTAGE,
-    #    min_value=500,
-    #    max_value=1500,
-    #    step=1,
-    #    multiplier=0.1,
-    #    translation_key="summ_delivered_calibration",
-    #    fallback_name="Summation Delivered Calibration",
-    #    entity_type=EntityType.CONFIG,
-    # )
-    # .tuya_number(
-    #    dp_id=125,
-    #    attribute_name="current_summ_delivered_coefficient_ch_b",
-    #    type=t.uint32_t_be,
-    #    # unit=PERCENTAGE,
-    #    min_value=500,
-    #    max_value=1500,
-    #    step=1,
-    #    multiplier=0.1,
-    #    translation_key="summ_delivered_calibration_b",
-    #    fallback_name="Summation Delivered Calibration B",
-    #    entity_type=EntityType.CONFIG,
-    # )
-    # .tuya_number(
-    #    dp_id=127,
-    #    attribute_name="current_summ_received_coefficient",
-    #    type=t.uint32_t_be,
-    #    # unit=PERCENTAGE,
-    #    min_value=500,
-    #    max_value=1500,
-    #    step=1,
-    #    multiplier=0.1,
-    #    translation_key="summ_received_calibration",
-    #    fallback_name="Summation Received Calibration",
-    #    entity_type=EntityType.CONFIG,
-    # )
-    # .tuya_number(
-    #    dp_id=128,
-    #    attribute_name="current_summ_received_coefficient_ch_b",
-    #    type=t.uint32_t_be,
-    #    # unit=PERCENTAGE,
-    #    min_value=500,
-    #    max_value=1500,
-    #    step=1,
-    #    multiplier=0.1,
-    #    translation_key="summ_received_calibration_b",
-    #    fallback_name="Summation Received Calibration B",
-    #    entity_type=EntityType.CONFIG,
-    # )
-    # .tuya_number(
-    #    dp_id=118,
-    #    attribute_name="instantaneous_demand_coefficient",
-    #    type=t.uint32_t_be,
-    #    # unit=PERCENTAGE,
-    #    min_value=500,
-    #    max_value=1500,
-    #    step=1,
-    #    multiplier=0.1,
-    #    translation_key="instantaneous_demand_calibration",
-    #    fallback_name="Instantaneous Demand Calibration",
-    #    entity_type=EntityType.CONFIG,
-    # )
-    # .tuya_number(
-    #    dp_id=124,
-    #    attribute_name="instantaneous_demand_coefficient_ch_b",
-    #    type=t.uint32_t_be,
-    #    # unit=PERCENTAGE,
-    #    min_value=500,
-    #    max_value=1500,
-    #    step=1,
-    #    multiplier=0.1,
-    #    translation_key="instantaneous_demand_calibration_b",
-    #    fallback_name="Instantaneous Demand Calibration B",
-    #    entity_type=EntityType.CONFIG,
-    # )
-    # .tuya_number(
-    #    dp_id=117,
-    #    attribute_name="rms_current_coefficient",
-    #    type=t.uint32_t_be,
-    #    # unit=PERCENTAGE,
-    #    min_value=500,
-    #    max_value=1500,
-    #    step=1,
-    #    multiplier=0.1,
-    #    translation_key="rms_current_calibration",
-    #    fallback_name="RMS Current Calibration",
-    #    entity_type=EntityType.CONFIG,
-    # )
-    # .tuya_number(
-    #    dp_id=123,
-    #    attribute_name="rms_current_coefficient_ch_b",
-    #    type=t.uint32_t_be,
-    #    # unit=PERCENTAGE,
-    #    min_value=500,
-    #    max_value=1500,
-    #    step=1,
-    #    multiplier=0.1,
-    #    translation_key="rms_current_calibration_b",
-    #    fallback_name="RMS Current Calibration B",
-    #    entity_type=EntityType.CONFIG,
-    # )
-    # .tuya_number(
-    #    dp_id=116,
-    #    attribute_name="rms_voltage_coefficient",
-    #    type=t.uint32_t_be,
-    #    # unit=PERCENTAGE,
-    #    min_value=500,
-    #    max_value=1500,
-    #    step=1,
-    #    multiplier=0.1,
-    #    translation_key="rms_voltage_calibration",
-    #    fallback_name="RMS Voltage Calibration",
-    #    entity_type=EntityType.CONFIG,
-    # )
+    .tuya_number(
+        dp_id=122,
+        attribute_name="ac_frequency_coefficient",
+        type=t.uint32_t_be,
+        # unit=PERCENTAGE,
+        min_value=0,
+        max_value=2000,
+        step=1,
+        multiplier=0.1,
+        translation_key="calibrate_ac_frequency",
+        fallback_name="Calibrate AC frequency",
+        entity_type=EntityType.CONFIG,
+        initially_disabled=True,
+    )
+    .tuya_number(
+        dp_id=119,
+        attribute_name="current_summ_delivered_coefficient",
+        type=t.uint32_t_be,
+        # unit=PERCENTAGE,
+        min_value=0,
+        max_value=2000,
+        step=1,
+        multiplier=0.1,
+        translation_key="calibrate_summ_delivered",
+        fallback_name="Calibrate summation delivered",
+        entity_type=EntityType.CONFIG,
+        initially_disabled=True,
+    )
+    .tuya_number(
+        dp_id=125,
+        attribute_name="current_summ_delivered_coefficient"
+        + Channel.attr_suffix(Channel.B),
+        type=t.uint32_t_be,
+        # unit=PERCENTAGE,
+        min_value=0,
+        max_value=2000,
+        step=1,
+        multiplier=0.1,
+        translation_key="calibrate_summ_delivered_b",
+        fallback_name="Calibrate summation delivered B",
+        entity_type=EntityType.CONFIG,
+        initially_disabled=True,
+    )
+    .tuya_number(
+        dp_id=127,
+        attribute_name="current_summ_received_coefficient",
+        type=t.uint32_t_be,
+        # unit=PERCENTAGE,
+        min_value=0,
+        max_value=2000,
+        step=1,
+        multiplier=0.1,
+        translation_key="calibrate_summ_received",
+        fallback_name="Calibrate summation received",
+        entity_type=EntityType.CONFIG,
+        initially_disabled=True,
+    )
+    .tuya_number(
+        dp_id=128,
+        attribute_name="current_summ_received_coefficient"
+        + Channel.attr_suffix(Channel.B),
+        type=t.uint32_t_be,
+        # unit=PERCENTAGE,
+        min_value=0,
+        max_value=2000,
+        step=1,
+        multiplier=0.1,
+        translation_key="calibrate_summ_received_b",
+        fallback_name="Calibrate summation received B",
+        entity_type=EntityType.CONFIG,
+        initially_disabled=True,
+    )
+    .tuya_number(
+        dp_id=118,
+        attribute_name="instantaneous_demand_coefficient",
+        type=t.uint32_t_be,
+        # unit=PERCENTAGE,
+        min_value=0,
+        max_value=2000,
+        step=1,
+        multiplier=0.1,
+        translation_key="calibrate_instantaneous_demand",
+        fallback_name="Calibrate instantaneous demand",
+        entity_type=EntityType.CONFIG,
+        initially_disabled=True,
+    )
+    .tuya_number(
+        dp_id=124,
+        attribute_name="instantaneous_demand_coefficient"
+        + Channel.attr_suffix(Channel.B),
+        type=t.uint32_t_be,
+        # unit=PERCENTAGE,
+        min_value=0,
+        max_value=2000,
+        step=1,
+        multiplier=0.1,
+        translation_key="calibrate_instantaneous_demand_b",
+        fallback_name="Calibrate instantaneous demand B",
+        entity_type=EntityType.CONFIG,
+        initially_disabled=True,
+    )
+    .tuya_number(
+        dp_id=117,
+        attribute_name="rms_current_coefficient",
+        type=t.uint32_t_be,
+        # unit=PERCENTAGE,
+        min_value=0,
+        max_value=2000,
+        step=1,
+        multiplier=0.1,
+        translation_key="calibrate_current",
+        fallback_name="Calibrate current",
+        entity_type=EntityType.CONFIG,
+        initially_disabled=True,
+    )
+    .tuya_number(
+        dp_id=123,
+        attribute_name="rms_current_coefficient" + Channel.attr_suffix(Channel.B),
+        type=t.uint32_t_be,
+        # unit=PERCENTAGE,
+        min_value=0,
+        max_value=2000,
+        step=1,
+        multiplier=0.1,
+        translation_key="calibrate_current_b",
+        fallback_name="Calibrate current B",
+        entity_type=EntityType.CONFIG,
+        initially_disabled=True,
+    )
+    .tuya_number(
+        dp_id=116,
+        attribute_name="rms_voltage_coefficient",
+        type=t.uint32_t_be,
+        # unit=PERCENTAGE,
+        min_value=0,
+        max_value=2000,
+        step=1,
+        multiplier=0.1,
+        translation_key="calibrate_voltage",
+        fallback_name="Calibrate voltage",
+        entity_type=EntityType.CONFIG,
+        initially_disabled=True,
+    )
     .add_to_registry()
 )
