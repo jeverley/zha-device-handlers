@@ -309,7 +309,6 @@ async def test_tuya_energy_meter_quirk_energy_direction_delay_mitigation(
 
     AUTOMATIC = 0
     DISABLED = 1
-    ENABLED = 2
 
     ep = quirked_device.endpoints[1]
 

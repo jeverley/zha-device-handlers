@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Final
 
-from zigpy.quirks.v2.homeassistant import EntityType, UnitOfTime  # , PERCENTAGE
+from zigpy.quirks.v2.homeassistant import EntityType, PERCENTAGE, UnitOfTime
 import zigpy.types as t
 from zigpy.zcl import Cluster
 from zigpy.zcl.clusters.homeautomation import MeasurementType
@@ -13,6 +13,7 @@ from zigpy.zcl.foundation import BaseAttributeDefs, ZCLAttributeDef
 
 from zhaquirks import LocalDataCluster
 from zhaquirks.tuya import (
+    DPToAttributeMapping,
     TuyaLocalCluster,
     TuyaZBElectricalMeasurement,
     TuyaZBMeteringClusterWithUnit,
@@ -56,30 +57,22 @@ class TuyaEnergyDirection(t.enum1):
 
 
 class TuyaPowerPhase:
-    """Methods for extracting values from a Tuya power phase datapoints."""
+    """Methods for extracting values from a Tuya Power Phase datapoint."""
 
     @staticmethod
-    def variant_1(value) -> tuple[t.uint_t, t.uint_t]:
-        """Variant 1 of power phase Data Point."""
-        voltage = value[14] | value[13] << 8
-        current = value[12] | value[11] << 8
-        return voltage, current
+    def voltage(value) -> t.uint_t:
+        """Return the voltage value."""
+        return (value[0] << 8) | value[1]
 
     @staticmethod
-    def variant_2(value) -> tuple[t.uint_t, t.uint_t, int]:
-        """Variant 2 of power phase Data Point."""
-        voltage = value[1] | value[0] << 8
-        current = value[4] | value[3] << 8
-        power = value[7] | value[6] << 8
-        return voltage, current, power * 10
+    def current(value) -> t.uint_t:
+        """Return the current value."""
+        return (value[2] << 16) | (value[3] << 8) | value[4]
 
     @staticmethod
-    def variant_3(value) -> tuple[t.uint_t, t.uint_t, int]:
-        """Variant 3 of power phase Data Point."""
-        voltage = (value[0] << 8) | value[1]
-        current = (value[2] << 16) | (value[3] << 8) | value[4]
-        power = (value[5] << 16) | (value[6] << 8) | value[7]
-        return voltage, current, power * 10
+    def power(value) -> int:
+        """Return the power value."""
+        return (value[5] << 16) | (value[6] << 8) | value[7] * 10
 
 
 class EnergyDirectionMitigation(t.enum8):
@@ -584,16 +577,26 @@ class TuyaMetering(
         + EnergyDirectionHelper.UNSIGNED_ATTR_SUFFIX,
         converter=lambda x: x * 10,
     )
-    .tuya_dp(
+    .tuya_dp_multi(
         dp_id=6,
-        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
-        attribute_name=(
-            TuyaElectricalMeasurement.AttributeDefs.rms_voltage.name,
-            TuyaElectricalMeasurement.AttributeDefs.rms_current.name,
-            TuyaElectricalMeasurement.AttributeDefs.active_power.name
-            + EnergyDirectionHelper.UNSIGNED_ATTR_SUFFIX,
-        ),
-        converter=lambda x: TuyaPowerPhase.variant_3(x),
+        attribute_mapping=[
+            DPToAttributeMapping(
+                ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+                attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_voltage.name,
+                converter=TuyaPowerPhase.voltage,
+            ),
+            DPToAttributeMapping(
+                ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+                attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_current.name,
+                converter=TuyaPowerPhase.current,
+            ),
+            DPToAttributeMapping(
+                ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+                attribute_name=TuyaElectricalMeasurement.AttributeDefs.active_power.name
+                + EnergyDirectionHelper.UNSIGNED_ATTR_SUFFIX,
+                converter=TuyaPowerPhase.power,
+            ),
+        ],
     )
     .tuya_dp_attribute(
         dp_id=102,
@@ -851,7 +854,7 @@ class TuyaMetering(
         dp_id=122,
         attribute_name="ac_frequency_coefficient",
         type=t.uint32_t_be,
-        # unit=PERCENTAGE,
+        unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
         step=0.1,
@@ -865,7 +868,7 @@ class TuyaMetering(
         dp_id=119,
         attribute_name="current_summ_delivered_coefficient",
         type=t.uint32_t_be,
-        # unit=PERCENTAGE,
+        unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
         step=0.1,
@@ -880,7 +883,7 @@ class TuyaMetering(
         attribute_name="current_summ_delivered_coefficient"
         + Channel.attr_suffix(Channel.B),
         type=t.uint32_t_be,
-        # unit=PERCENTAGE,
+        unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
         step=0.1,
@@ -894,7 +897,7 @@ class TuyaMetering(
         dp_id=127,
         attribute_name="current_summ_received_coefficient",
         type=t.uint32_t_be,
-        # unit=PERCENTAGE,
+        unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
         step=0.1,
@@ -909,7 +912,7 @@ class TuyaMetering(
         attribute_name="current_summ_received_coefficient"
         + Channel.attr_suffix(Channel.B),
         type=t.uint32_t_be,
-        # unit=PERCENTAGE,
+        unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
         step=0.1,
@@ -923,7 +926,7 @@ class TuyaMetering(
         dp_id=118,
         attribute_name="instantaneous_demand_coefficient",
         type=t.uint32_t_be,
-        # unit=PERCENTAGE,
+        unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
         step=0.1,
@@ -938,7 +941,7 @@ class TuyaMetering(
         attribute_name="instantaneous_demand_coefficient"
         + Channel.attr_suffix(Channel.B),
         type=t.uint32_t_be,
-        # unit=PERCENTAGE,
+        unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
         step=0.1,
@@ -952,7 +955,7 @@ class TuyaMetering(
         dp_id=117,
         attribute_name="rms_current_coefficient",
         type=t.uint32_t_be,
-        # unit=PERCENTAGE,
+        unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
         step=0.1,
@@ -966,7 +969,7 @@ class TuyaMetering(
         dp_id=123,
         attribute_name="rms_current_coefficient" + Channel.attr_suffix(Channel.B),
         type=t.uint32_t_be,
-        # unit=PERCENTAGE,
+        unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
         step=0.1,
@@ -980,7 +983,7 @@ class TuyaMetering(
         dp_id=116,
         attribute_name="rms_voltage_coefficient",
         type=t.uint32_t_be,
-        # unit=PERCENTAGE,
+        unit=PERCENTAGE,
         min_value=0,
         max_value=2000,
         step=0.1,
