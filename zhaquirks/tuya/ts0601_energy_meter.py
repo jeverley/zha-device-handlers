@@ -20,7 +20,7 @@ from zhaquirks.tuya import (
 from zhaquirks.tuya.builder import TuyaQuirkBuilder
 from zhaquirks.tuya.mcu import TuyaMCUCluster
 
-POWER_FLOW: Final = "power_flow"
+ENERGY_DIRECTION: Final = "energy_direction"
 
 
 class Channel(t.enum8):
@@ -48,8 +48,8 @@ class Channel(t.enum8):
     __VIRTUAL_CHANNELS: set[Channel] = {AB}
 
 
-class TuyaPowerFlow(t.enum1):
-    """Power Flow attribute type."""
+class TuyaEnergyDirection(t.enum1):
+    """Energy direction attribute type."""
 
     Forward = 0x0
     Reverse = 0x1
@@ -82,8 +82,8 @@ class TuyaPowerPhase:
         return voltage, current, power * 10
 
 
-class PowerFlowMitigation(t.enum8):
-    """Enum type for power flow mitigation attribute."""
+class EnergyDirectionMitigation(t.enum8):
+    """Enum type for energy direction mitigation attribute."""
 
     Automatic = 0
     Disabled = 1
@@ -107,11 +107,11 @@ class EnergyMeterConfiguration(LocalDataCluster):
     ep_attribute: Final = "energy_meter_config"
 
     VirtualChannelConfig: Final = VirtualChannelConfig
-    PowerFlowMitigation: Final = PowerFlowMitigation
+    EnergyDirectionMitigation: Final = EnergyDirectionMitigation
 
     _ATTRIBUTE_DEFAULTS: tuple[str, Any] = {
         "virtual_channel_config": VirtualChannelConfig.none,
-        "power_flow_mitigation": PowerFlowMitigation.Automatic,
+        "energy_direction_mitigation": EnergyDirectionMitigation.Automatic,
     }
 
     class AttributeDefs(BaseAttributeDefs):
@@ -123,9 +123,9 @@ class EnergyMeterConfiguration(LocalDataCluster):
             access="rw",
             is_manufacturer_specific=True,
         )
-        power_flow_mitigation = ZCLAttributeDef(
+        energy_direction_mitigation = ZCLAttributeDef(
             id=0x5010,
-            type=PowerFlowMitigation,
+            type=EnergyDirectionMitigation,
             access="rw",
             is_manufacturer_specific=True,
         )
@@ -186,66 +186,68 @@ class MeterClusterHelper:
         )
 
 
-class PowerFlowHelper(MeterClusterHelper):
-    """Apply Tuya power_flow to ZCL power attributes."""
+class EnergyDirectionHelper(MeterClusterHelper):
+    """Apply Tuya EnergyDirection to ZCL power attributes."""
 
     UNSIGNED_ATTR_SUFFIX: Final = "_attr_unsigned"
 
-    def align_with_power_flow(self, value: int | None) -> int | None:
-        """Align the value with current power_flow direction."""
+    def align_with_energy_direction(self, value: int | None) -> int | None:
+        """Align the value with current energy_direction."""
         if value and (
-            self.power_flow == TuyaPowerFlow.Reverse
+            self.energy_direction == TuyaEnergyDirection.Reverse
             and value > 0
-            or self.power_flow == TuyaPowerFlow.Forward
+            or self.energy_direction == TuyaEnergyDirection.Forward
             and value < 0
         ):
             value = -value
         return value
 
     @property
-    def power_flow(self) -> TuyaPowerFlow | None:
-        """Return the channel power flow direction."""
+    def energy_direction(self) -> TuyaEnergyDirection | None:
+        """Return the channel energy direction."""
         if not self.mcu_cluster:
             return None
         try:
-            return self.mcu_cluster.get(POWER_FLOW + Channel.attr_suffix(self.channel))
+            return self.mcu_cluster.get(
+                ENERGY_DIRECTION + Channel.attr_suffix(self.channel)
+            )
         except KeyError:
             return None
 
-    @power_flow.setter
-    def power_flow(self, value: TuyaPowerFlow):
-        """Update the channel power flow direction."""
+    @energy_direction.setter
+    def energy_direction(self, value: TuyaEnergyDirection):
+        """Update the channel energy direction."""
         if not self.mcu_cluster:
             return
         self.mcu_cluster.update_attribute(
-            POWER_FLOW + Channel.attr_suffix(self.channel)
+            ENERGY_DIRECTION + Channel.attr_suffix(self.channel)
         )
 
-    def power_flow_handler(self, attr_name: str, value) -> tuple[str, Any]:
-        """Unsigned attributes are aligned with power flow direction."""
+    def energy_direction_handler(self, attr_name: str, value) -> tuple[str, Any]:
+        """Unsigned attributes are aligned with energy direction."""
         if attr_name.endswith(self.UNSIGNED_ATTR_SUFFIX):
             attr_name = attr_name.removesuffix(self.UNSIGNED_ATTR_SUFFIX)
-            value = self.align_with_power_flow(value)
+            value = self.align_with_energy_direction(value)
         return attr_name, value
 
 
-class PowerFlowMitigationHelper(PowerFlowHelper, MeterClusterHelper):
-    """Logic compensating for delayed power flow direction reporting.
+class EnergyDirectionMitigationHelper(EnergyDirectionHelper, MeterClusterHelper):
+    """Logic compensating for delayed energy direction reporting.
 
     _TZE204_81yrt3lo (app_version: 74, hw_version: 1 and stack_version: 0) has a bug
-    which results in it reporting power_flow after its power data points.
+    which results in it reporting energy_direction after its power data points.
     This means a change in direction would only be reported after the subsequent DP report,
     resulting in incorrect attribute signing in the ZCL clusters.
 
-    This mitigation holds attribute update values until the subsequent power_flow report,
+    This mitigation holds attribute update values until the subsequent energy_direction report,
     resulting in correct values, but a delay in attribute update equal to the update interval.
     """
 
     HOLD = "hold"
     RELEASE = "release"
 
-    """Devices requiring power flow mitigation."""
-    _POWER_FLOW_MITIGATION: tuple[dict] = (
+    """Devices requiring energy direction mitigation."""
+    _ENERGY_DIRECTION_MITIGATION_MATCHES: tuple[dict] = (
         {
             "manufacturer": "_TZE204_81yrt3lo",
             "model": "TS0601",
@@ -264,31 +266,31 @@ class PowerFlowMitigationHelper(PowerFlowHelper, MeterClusterHelper):
         super().__init__(*args, **kwargs)
 
     @property
-    def power_flow_mitigation(self) -> bool:
+    def energy_direction_mitigation(self) -> bool:
         """Return the mitigation configuration."""
         return self.get_config(
-            EnergyMeterConfiguration.AttributeDefs.power_flow_mitigation.name
+            EnergyMeterConfiguration.AttributeDefs.energy_direction_mitigation.name
         )
 
     @property
-    def power_flow_mitigation_required(self) -> bool:
-        """Return True if the device requires Power Flow mitigations."""
+    def energy_direction_mitigation_required(self) -> bool:
+        """Return True if the device requires Energy direction mitigations."""
         if self._mitigation_required is None:
             self._mitigation_required = self._evaluate_device_mitigation()
         return self._mitigation_required
 
-    def power_flow_mitigation_handler(self, attr_name: str, value) -> str | None:
-        """Compensate for delay in reported power flow direction."""
+    def energy_direction_mitigation_handler(self, attr_name: str, value) -> str | None:
+        """Compensate for delay in reported energy direction."""
         if (
             attr_name.removesuffix(self.UNSIGNED_ATTR_SUFFIX)
             not in self._EXTENSIVE_ATTRIBUTES
-            or self.power_flow_mitigation
+            or self.energy_direction_mitigation
             not in (
-                PowerFlowMitigation.Automatic,
-                PowerFlowMitigation.Enabled,
+                EnergyDirectionMitigation.Automatic,
+                EnergyDirectionMitigation.Enabled,
             )
-            or self.power_flow_mitigation == PowerFlowMitigation.Automatic
-            and not self.power_flow_mitigation_required
+            or self.energy_direction_mitigation == EnergyDirectionMitigation.Automatic
+            and not self.energy_direction_mitigation_required
         ):
             return None
 
@@ -304,7 +306,7 @@ class PowerFlowMitigationHelper(PowerFlowHelper, MeterClusterHelper):
     def _mitigation_action(
         self, attr_name: str, value: int, trigger_channel: Channel
     ) -> str:
-        """Return the action for the power flow mitigation handler."""
+        """Return the action for the energy direction mitigation handler."""
         return self.RELEASE
 
     def _get_held_value(self, attr_name: str) -> int | None:
@@ -328,7 +330,7 @@ class PowerFlowMitigationHelper(PowerFlowHelper, MeterClusterHelper):
             cluster._store_value(attr_name, None)
 
     def _evaluate_device_mitigation(self) -> bool:
-        """Return True if the device requires Power Flow mitigation."""
+        """Return True if the device requires energy direction mitigation."""
         basic_cluster = self.endpoint.device.endpoints[1].basic
         return {
             "manufacturer": self.endpoint.device.manufacturer,
@@ -344,10 +346,10 @@ class PowerFlowMitigationHelper(PowerFlowHelper, MeterClusterHelper):
                     basic_cluster.AttributeDefs.stack_version.name
                 ),
             },
-        } in self._POWER_FLOW_MITIGATION
+        } in self._ENERGY_DIRECTION_MITIGATION_MATCHES
 
 
-class VirtualChannelHelper(PowerFlowHelper, MeterClusterHelper):
+class VirtualChannelHelper(EnergyDirectionHelper, MeterClusterHelper):
     """Methods for calculating virtual energy meter channel attributes."""
 
     """Map of virtual channels to their trigger channel and calculation method."""
@@ -430,12 +432,12 @@ class VirtualChannelHelper(PowerFlowHelper, MeterClusterHelper):
         self,
         attr_name: str,
         channels: tuple[Channel],
-        align_uint_with_power_flow: bool = True,
+        align_uint_with_energy_direction: bool = True,
     ) -> tuple:
         """Get source values from channel clusters."""
         return tuple(
-            cluster.align_with_power_flow(cluster.get(attr_name))
-            if align_uint_with_power_flow and self._is_attr_uint(attr_name)
+            cluster.align_with_energy_direction(cluster.get(attr_name))
+            if align_uint_with_energy_direction and self._is_attr_uint(attr_name)
             else cluster.get(attr_name)
             for channel in channels
             for cluster in [self.get_cluster(channel)]
@@ -444,8 +446,8 @@ class VirtualChannelHelper(PowerFlowHelper, MeterClusterHelper):
 
 class TuyaElectricalMeasurement(
     VirtualChannelHelper,
-    PowerFlowMitigationHelper,
-    PowerFlowHelper,
+    EnergyDirectionMitigationHelper,
+    EnergyDirectionHelper,
     MeterClusterHelper,
     TuyaLocalCluster,
     TuyaZBElectricalMeasurement,
@@ -501,11 +503,11 @@ class TuyaElectricalMeasurement(
     def update_attribute(self, attr_name: str, value):
         """Update the cluster attribute."""
         if (
-            self.power_flow_mitigation_handler(attr_name, value)
-            == PowerFlowMitigationHelper.HOLD
+            self.energy_direction_mitigation_handler(attr_name, value)
+            == EnergyDirectionMitigationHelper.HOLD
         ):
             return
-        attr_name, value = self.power_flow_handler(attr_name, value)
+        attr_name, value = self.energy_direction_handler(attr_name, value)
         super().update_attribute(attr_name, value)
         self._update_measurement_type(attr_name)
         self.virtual_channel_handler(attr_name)
@@ -525,8 +527,8 @@ class TuyaElectricalMeasurement(
 
 class TuyaMetering(
     VirtualChannelHelper,
-    PowerFlowMitigationHelper,
-    PowerFlowHelper,
+    EnergyDirectionMitigationHelper,
+    EnergyDirectionHelper,
     MeterClusterHelper,
     TuyaLocalCluster,
     TuyaZBMeteringClusterWithUnit,
@@ -562,11 +564,11 @@ class TuyaMetering(
     def update_attribute(self, attr_name: str, value):
         """Update the cluster attribute."""
         if (
-            self.power_flow_mitigation_handler(attr_name, value)
-            == PowerFlowMitigationHelper.HOLD
+            self.energy_direction_mitigation_handler(attr_name, value)
+            == EnergyDirectionMitigationHelper.HOLD
         ):
             return
-        attr_name, value = self.power_flow_handler(attr_name, value)
+        attr_name, value = self.energy_direction_handler(attr_name, value)
         super().update_attribute(attr_name, value)
         self.virtual_channel_handler(attr_name)
 
@@ -627,7 +629,7 @@ class TuyaMetering(
         dp_id=108,
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.instantaneous_demand.name
-        + PowerFlowHelper.UNSIGNED_ATTR_SUFFIX,
+        + EnergyDirectionHelper.UNSIGNED_ATTR_SUFFIX,
         converter=lambda x: x * 10,
     )
     .tuya_dp(
@@ -637,15 +639,15 @@ class TuyaMetering(
             TuyaElectricalMeasurement.AttributeDefs.rms_voltage.name,
             TuyaElectricalMeasurement.AttributeDefs.rms_current.name,
             TuyaElectricalMeasurement.AttributeDefs.active_power.name
-            + PowerFlowHelper.UNSIGNED_ATTR_SUFFIX,
+            + EnergyDirectionHelper.UNSIGNED_ATTR_SUFFIX,
         ),
         converter=lambda x: TuyaPowerPhase.variant_3(x),
     )
     .tuya_dp_attribute(
         dp_id=102,
-        attribute_name=POWER_FLOW,
-        type=TuyaPowerFlow,
-        converter=lambda x: TuyaPowerFlow(x),
+        attribute_name=ENERGY_DIRECTION,
+        type=TuyaEnergyDirection,
+        converter=lambda x: TuyaEnergyDirection(x),
     )
     .add_to_registry()
 )
@@ -743,15 +745,15 @@ class TuyaMetering(
     )
     .tuya_dp_attribute(
         dp_id=114,
-        attribute_name=POWER_FLOW,
-        type=TuyaPowerFlow,
-        converter=lambda x: TuyaPowerFlow(x),
+        attribute_name=ENERGY_DIRECTION,
+        type=TuyaEnergyDirection,
+        converter=lambda x: TuyaEnergyDirection(x),
     )
     .tuya_dp_attribute(
         dp_id=115,
-        attribute_name=POWER_FLOW + Channel.attr_suffix(Channel.B),
-        type=TuyaPowerFlow,
-        converter=lambda x: TuyaPowerFlow(x),
+        attribute_name=ENERGY_DIRECTION + Channel.attr_suffix(Channel.B),
+        type=TuyaEnergyDirection,
+        converter=lambda x: TuyaEnergyDirection(x),
     )
     .tuya_number(
         dp_id=116,
@@ -791,12 +793,12 @@ class TuyaMetering(
         fallback_name="Virtual channel",
     )
     .enum(
-        EnergyMeterConfiguration.AttributeDefs.power_flow_mitigation.name,
-        PowerFlowMitigation,
+        EnergyMeterConfiguration.AttributeDefs.energy_direction_mitigation.name,
+        EnergyDirectionMitigation,
         EnergyMeterConfiguration.cluster_id,
         entity_type=EntityType.CONFIG,
-        translation_key="power_flow_delay_mitigation",
-        fallback_name="Power flow delay mitigation",
+        translation_key="energy_direction_delay_mitigation",
+        fallback_name="Energy direction delay mitigation",
     )
     .tuya_dp(
         dp_id=111,
@@ -833,13 +835,13 @@ class TuyaMetering(
         dp_id=101,
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.instantaneous_demand.name
-        + PowerFlowHelper.UNSIGNED_ATTR_SUFFIX,
+        + EnergyDirectionHelper.UNSIGNED_ATTR_SUFFIX,
     )
     .tuya_dp(
         dp_id=105,
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.instantaneous_demand.name
-        + PowerFlowHelper.UNSIGNED_ATTR_SUFFIX,
+        + EnergyDirectionHelper.UNSIGNED_ATTR_SUFFIX,
         endpoint_id=Channel.B,
     )
     .tuya_dp(
@@ -871,15 +873,15 @@ class TuyaMetering(
     )
     .tuya_dp_attribute(
         dp_id=102,
-        attribute_name=POWER_FLOW,
-        type=TuyaPowerFlow,
-        converter=lambda x: TuyaPowerFlow(x),
+        attribute_name=ENERGY_DIRECTION,
+        type=TuyaEnergyDirection,
+        converter=lambda x: TuyaEnergyDirection(x),
     )
     .tuya_dp_attribute(
         dp_id=104,
-        attribute_name=POWER_FLOW + Channel.attr_suffix(Channel.B),
-        type=TuyaPowerFlow,
-        converter=lambda x: TuyaPowerFlow(x),
+        attribute_name=ENERGY_DIRECTION + Channel.attr_suffix(Channel.B),
+        type=TuyaEnergyDirection,
+        converter=lambda x: TuyaEnergyDirection(x),
     )
     .tuya_number(
         dp_id=129,
