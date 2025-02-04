@@ -1130,7 +1130,7 @@ class PowerPhaseVariant2:
 
 class PowerPhaseVariant3:
     """Methods for extracting values from a Tuya Power Phase datapoint.
-    
+
     'TS0601': (
         '_TZE204_ac0fhfiq',
         '_TZE200_qhlxve78',
