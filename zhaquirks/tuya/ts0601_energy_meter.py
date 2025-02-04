@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Final, Type
+from typing import Any, Final
 
 from zigpy.quirks.v2.homeassistant import PERCENTAGE, EntityType, UnitOfTime
 import zigpy.types as t
@@ -14,6 +14,7 @@ from zigpy.zcl.foundation import BaseAttributeDefs, ZCLAttributeDef
 from zhaquirks import LocalDataCluster
 from zhaquirks.tuya import (
     DPToAttributeMapping,
+    PowerPhaseVariant2,
     PowerPhaseVariant3,
     TuyaLocalCluster,
     TuyaZBElectricalMeasurement,
@@ -31,6 +32,8 @@ class Channel(t.enum8):
     A = 1
     B = 2
     C = 3
+
+    Total = 10
     AB = 11
     ABC = 12
 
@@ -86,7 +89,7 @@ class EnergyMeterConfiguration(LocalDataCluster):
     EnergyDirectionMitigation: Final = EnergyDirectionMitigation
 
     _ATTRIBUTE_DEFAULTS: tuple[str, Any] = {
-        "virtual_channel_config": VirtualChannelConfig.none,
+        "virtual_channel_config": VirtualChannelConfig.Total,
         "energy_direction_mitigation": EnergyDirectionMitigation.Automatic,
     }
 
@@ -155,7 +158,7 @@ class MeterClusterHelper:
             return None
         return cluster.get(attr_name, default)
 
-    def is_attr_type(self, attr_name: str, compare_type: Type) -> bool:
+    def is_attr_type(self, attr_name: str, compare_type: type) -> bool:
         """Return True if the attribute type is a subclass of the compare type."""
         return issubclass(getattr(self.AttributeDefs, attr_name).type, compare_type)
 
@@ -206,19 +209,17 @@ class EnergyDirectionHelper(MeterClusterHelper):
             return self._energy_direction
 
     def energy_direction_handler(self, attr_name: str, value) -> tuple[str, Any]:
-        """Unsigned attributes are aligned with energy direction."""
+        """Unsigned device values are aligned with the energy direction."""
         if attr_name not in self._EXTENSIVE_ATTRIBUTES or not self.is_attr_type(
             attr_name, t.int_t
         ):
             return attr_name, value
-
-        # unsigned attribtues have the energy direction applied
         if attr_name.endswith(self.UNSIGNED_ATTR_SUFFIX):
             attr_name = attr_name.removesuffix(self.UNSIGNED_ATTR_SUFFIX)
             value = self.align_with_energy_direction(value)
 
-        # the cluster energy direction is updated (used in virtual channel calculations on devices with native signed values)
         if value is not None:
+            # _energy_direction used for virtual calculations on devices with native signed values
             self._energy_direction = (
                 TuyaEnergyDirection.Reverse
                 if value < 0
@@ -413,15 +414,27 @@ class TuyaElectricalMeasurement(
     TuyaLocalCluster,
     TuyaZBElectricalMeasurement,
 ):
-    """ElectricalMeasurement cluster for Tuya energy meter devices."""
+    """ElectricalMeasurement cluster for Tuya energy meter devices.
+
+    Attribute units prior to cluster formatting:
+        Current: A * 1000 (milliampres)
+        Frequency: Hz * 100
+        Power: W * 10 (deciwatt)
+        Voltage: V * 10 (decivolt)
+    """
+
+    AMPERE_MULTIPLIER = 1000
+    HZ_MULTIPLIER = 100
+    VOLT_MULTIPLIER = 10
+    WATT_MULTIPLIER = 10
 
     _CONSTANT_ATTRIBUTES: dict[int, Any] = {
-        **TuyaZBElectricalMeasurement._CONSTANT_ATTRIBUTES,
-        TuyaZBElectricalMeasurement.AttributeDefs.ac_frequency_divisor.id: 100,
+        **TuyaZBElectricalMeasurement._CONSTANT_ATTRIBUTES,  # imports current divisor of 1000
+        TuyaZBElectricalMeasurement.AttributeDefs.ac_frequency_divisor.id: 100,  # 2 decimals
         TuyaZBElectricalMeasurement.AttributeDefs.ac_frequency_multiplier.id: 1,
-        TuyaZBElectricalMeasurement.AttributeDefs.ac_power_divisor.id: 10,
+        TuyaZBElectricalMeasurement.AttributeDefs.ac_power_divisor.id: 10,  # 1 decimal
         TuyaZBElectricalMeasurement.AttributeDefs.ac_power_multiplier.id: 1,
-        TuyaZBElectricalMeasurement.AttributeDefs.ac_voltage_divisor.id: 10,
+        TuyaZBElectricalMeasurement.AttributeDefs.ac_voltage_divisor.id: 10,  # 1 decimal
         TuyaZBElectricalMeasurement.AttributeDefs.ac_voltage_multiplier.id: 1,
     }
 
@@ -492,6 +505,10 @@ class TuyaMetering(
 ):
     """Metering cluster for Tuya energy meter devices."""
 
+    WATT_MULTIPLIER = 10
+    WATT_HOUR_MULTIPLIER = 1000
+    DECIWATT_HOUR_MULTIPLIER = 100
+
     @staticmethod
     def format(
         whole_digits: int, dec_digits: int, suppress_leading_zeros: bool = True
@@ -505,7 +522,7 @@ class TuyaMetering(
         **TuyaZBMeteringClusterWithUnit._CONSTANT_ATTRIBUTES,
         TuyaZBMeteringClusterWithUnit.AttributeDefs.status.id: 0x00,
         TuyaZBMeteringClusterWithUnit.AttributeDefs.multiplier.id: 1,
-        TuyaZBMeteringClusterWithUnit.AttributeDefs.divisor.id: 10000,  # 1 decimal place after conversion from kW to W
+        TuyaZBMeteringClusterWithUnit.AttributeDefs.divisor.id: 10000,  # 2 decimals for summation attributes
         TuyaZBMeteringClusterWithUnit.AttributeDefs.summation_formatting.id: format(
             whole_digits=7, dec_digits=2
         ),
@@ -529,29 +546,30 @@ class TuyaMetering(
 (
     ### Tuya PJ-MGW1203 1 channel energy meter.
     TuyaQuirkBuilder("_TZE204_cjbofhxw", "TS0601")
+    .applies_to("_TZE284_cjbofhxw", "TS0601")
     .tuya_enchantment()
     .adds(EnergyMeterConfiguration)
     .adds(TuyaElectricalMeasurement)
     .adds(TuyaMetering)
     .tuya_dp(
-        dp_id=101,
+        dp_id=101,  # Wh (watt/hour)
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.current_summ_delivered.name,
-        converter=lambda x: x * 10,
+        converter=lambda x: x * TuyaMetering.WATT_HOUR_MULTIPLIER,
     )
     .tuya_dp(
-        dp_id=19,
-        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
-        attribute_name=TuyaElectricalMeasurement.AttributeDefs.active_power.name,
+        dp_id=19,  # W * 10 (deciwatt)
+        ep_attribute=TuyaMetering.ep_attribute,
+        attribute_name=TuyaMetering.AttributeDefs.instantaneous_demand.name,
     )
     .tuya_dp(
-        dp_id=18,
+        dp_id=18,  # A * 1000 (milliampre)
         ep_attribute=TuyaElectricalMeasurement.ep_attribute,
         attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_current.name,
         endpoint_id=Channel.B,
     )
     .tuya_dp(
-        dp_id=20,
+        dp_id=20,  # V * 10 (decivolt)
         ep_attribute=TuyaElectricalMeasurement.ep_attribute,
         attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_voltage.name,
     )
@@ -560,30 +578,29 @@ class TuyaMetering(
 
 
 (
-    ### Tuya bidirectional 1 channel energy meter with Zigbee Green Power.
+    ### Tuya bidirectional 1 channel energy meter.
     TuyaQuirkBuilder("_TZE204_ac0fhfiq", "TS0601")
     .tuya_enchantment()
     .adds(EnergyMeterConfiguration)
     .adds(TuyaElectricalMeasurement)
     .adds(TuyaMetering)
     .tuya_dp(
-        dp_id=101,
+        dp_id=1,  # Wh * 10 (deciwatt/hour)
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.current_summ_delivered.name,
-        converter=lambda x: x * 100,
+        converter=lambda x: x * TuyaMetering.DECIWATT_HOUR_MULTIPLIER,
     )
     .tuya_dp(
-        dp_id=102,
+        dp_id=2,  # Wh * 10 (deciwatt/hour)
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.current_summ_received.name,
-        converter=lambda x: x * 100,
+        converter=lambda x: x * TuyaMetering.DECIWATT_HOUR_MULTIPLIER,
     )
     .tuya_dp(
-        dp_id=108,
+        dp_id=101,  # deciwatt?
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.instantaneous_demand.name
         + EnergyDirectionHelper.UNSIGNED_ATTR_SUFFIX,
-        converter=lambda x: x * 10,
     )
     .tuya_dp_multi(
         dp_id=6,
@@ -591,23 +608,24 @@ class TuyaMetering(
             DPToAttributeMapping(
                 ep_attribute=TuyaElectricalMeasurement.ep_attribute,
                 attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_voltage.name,
-                converter=PowerPhaseVariant3.voltage_dV,
+                converter=PowerPhaseVariant3.voltage_dV,  # V * 10 (decivolt)
             ),
             DPToAttributeMapping(
                 ep_attribute=TuyaElectricalMeasurement.ep_attribute,
                 attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_current.name,
-                converter=PowerPhaseVariant3.current_mA,
+                converter=PowerPhaseVariant3.current_mA,  # A * 1000 (milliampre)
             ),
             DPToAttributeMapping(
                 ep_attribute=TuyaElectricalMeasurement.ep_attribute,
                 attribute_name=TuyaElectricalMeasurement.AttributeDefs.active_power.name
                 + EnergyDirectionHelper.UNSIGNED_ATTR_SUFFIX,
-                converter=lambda x: PowerPhaseVariant3.power_W(x) * 10,
+                converter=lambda x: PowerPhaseVariant3.power_W(x)
+                * TuyaElectricalMeasurement.WATT_MULTIPLIER,  # W (watt)
             ),
         ],
     )
     .tuya_dp_attribute(
-        dp_id=102,
+        dp_id=102,  # 0=Forward/1=Reverse
         attribute_name=ENERGY_DIRECTION,
         type=TuyaEnergyDirection,
         converter=lambda x: TuyaEnergyDirection(x),
@@ -617,7 +635,7 @@ class TuyaMetering(
 
 
 (
-    ### EARU Tuya 2 channel bidirectional energy meter manufacturer cluster.
+    ### EARU Tuya 2 channel bidirectional energy meter.
     TuyaQuirkBuilder("_TZE200_rks0sgb7", "TS0601")
     .tuya_enchantment()
     .adds_endpoint(Channel.B)
@@ -638,88 +656,91 @@ class TuyaMetering(
         fallback_name="Virtual channel",
     )
     .tuya_dp(
-        dp_id=113,
+        dp_id=113,  # Hz
         ep_attribute=TuyaElectricalMeasurement.ep_attribute,
         attribute_name=TuyaElectricalMeasurement.AttributeDefs.ac_frequency.name,
+        converter=lambda x: x * TuyaElectricalMeasurement.HZ_MULTIPLIER,
     )
     .tuya_dp(
-        dp_id=101,
+        dp_id=101,  # Wh * 10 (deciwatt/hour)
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.current_summ_delivered.name,
-        converter=lambda x: x * 100,
+        converter=lambda x: x * TuyaMetering.DECIWATT_HOUR_MULTIPLIER,
     )
     .tuya_dp(
-        dp_id=103,
+        dp_id=103,  # Wh * 10 (deciwatt/hour)
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.current_summ_delivered.name,
-        converter=lambda x: x * 100,
+        converter=lambda x: x * TuyaMetering.DECIWATT_HOUR_MULTIPLIER,
         endpoint_id=Channel.B,
     )
     .tuya_dp(
-        dp_id=102,
+        dp_id=102,  # Wh * 10 (deciwatt/hour)
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.current_summ_received.name,
-        converter=lambda x: x * 100,
+        converter=lambda x: x * TuyaMetering.DECIWATT_HOUR_MULTIPLIER,
     )
     .tuya_dp(
-        dp_id=104,
+        dp_id=104,  # Wh * 10 (deciwatt/hour)
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.current_summ_received.name,
-        converter=lambda x: x * 100,
+        converter=lambda x: x * TuyaMetering.DECIWATT_HOUR_MULTIPLIER,
         endpoint_id=Channel.B,
     )
     .tuya_dp(
-        dp_id=108,
+        dp_id=108,  # W (watt)
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.instantaneous_demand.name,
+        converter=lambda x: x * TuyaMetering.WATT_MULTIPLIER,
     )
     .tuya_dp(
-        dp_id=111,
+        dp_id=111,  # W (watt)
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.instantaneous_demand.name,
+        converter=lambda x: x * TuyaMetering.WATT_MULTIPLIER,
         endpoint_id=Channel.B,
     )
     .tuya_dp(
-        dp_id=109,
+        dp_id=109,  # % (power factor)
         ep_attribute=TuyaElectricalMeasurement.ep_attribute,
         attribute_name=TuyaElectricalMeasurement.AttributeDefs.power_factor.name,
     )
     .tuya_dp(
-        dp_id=112,
+        dp_id=112,  # % (power factor)
         ep_attribute=TuyaElectricalMeasurement.ep_attribute,
         attribute_name=TuyaElectricalMeasurement.AttributeDefs.power_factor.name,
         endpoint_id=Channel.B,
     )
     .tuya_dp(
-        dp_id=107,
+        dp_id=107,  # A * 1000 (milliampre)
         ep_attribute=TuyaElectricalMeasurement.ep_attribute,
         attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_current.name,
     )
     .tuya_dp(
-        dp_id=110,
+        dp_id=110,  # A * 1000 (milliampre)
         ep_attribute=TuyaElectricalMeasurement.ep_attribute,
         attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_current.name,
         endpoint_id=Channel.B,
     )
     .tuya_dp(
-        dp_id=106,
+        dp_id=106,  # V * 10 (decivolt)
         ep_attribute=TuyaElectricalMeasurement.ep_attribute,
         attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_voltage.name,
     )
     .tuya_dp_attribute(
-        dp_id=114,
+        dp_id=114,  # 0=Forward/1=Reverse
         attribute_name=ENERGY_DIRECTION,
         type=TuyaEnergyDirection,
         converter=lambda x: TuyaEnergyDirection(x),
     )
     .tuya_dp_attribute(
-        dp_id=115,
+        dp_id=115,  # 0=Forward/1=Reverse
         attribute_name=ENERGY_DIRECTION + Channel.attr_suffix(Channel.B),
         type=TuyaEnergyDirection,
         converter=lambda x: TuyaEnergyDirection(x),
     )
     .tuya_number(
-        dp_id=116,
+        dp_id=116,  # seconds
         attribute_name="reporting_interval",
         type=t.uint32_t_be,
         unit=UnitOfTime.SECONDS,
@@ -735,8 +756,9 @@ class TuyaMetering(
 
 
 (
-    ### MatSee Plus Tuya PJ-1203A 2 channel bidirectional energy meter with Zigbee Green Power.
+    ### MatSee Plus Tuya PJ-1203A 2 channel bidirectional energy meter.
     TuyaQuirkBuilder("_TZE204_81yrt3lo", "TS0601")
+    .applies_to("_TZE284_81yrt3lo", "TS0601")
     .tuya_enchantment()
     .adds_endpoint(Channel.B)
     .adds_endpoint(Channel.AB)
@@ -764,90 +786,90 @@ class TuyaMetering(
         fallback_name="Energy direction delay mitigation",
     )
     .tuya_dp(
-        dp_id=111,
+        dp_id=111,  # Hz * 100
         ep_attribute=TuyaElectricalMeasurement.ep_attribute,
         attribute_name=TuyaElectricalMeasurement.AttributeDefs.ac_frequency.name,
     )
     .tuya_dp(
-        dp_id=106,
+        dp_id=106,  # Wh * 10 (deciwatt/hour)
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.current_summ_delivered.name,
-        converter=lambda x: x * 100,
+        converter=lambda x: x * TuyaMetering.DECIWATT_HOUR_MULTIPLIER,
     )
     .tuya_dp(
-        dp_id=108,
+        dp_id=108,  # Wh * 10 (deciwatt/hour)
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.current_summ_delivered.name,
-        converter=lambda x: x * 100,
+        converter=lambda x: x * TuyaMetering.DECIWATT_HOUR_MULTIPLIER,
         endpoint_id=Channel.B,
     )
     .tuya_dp(
-        dp_id=107,
+        dp_id=107,  # Wh * 10 (deciwatt/hour)
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.current_summ_received.name,
-        converter=lambda x: x * 100,
+        converter=lambda x: x * TuyaMetering.DECIWATT_HOUR_MULTIPLIER,
     )
     .tuya_dp(
-        dp_id=109,
+        dp_id=109,  # Wh * 10 (deciwatt/hour)
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.current_summ_received.name,
-        converter=lambda x: x * 100,
+        converter=lambda x: x * TuyaMetering.DECIWATT_HOUR_MULTIPLIER,
         endpoint_id=Channel.B,
     )
     .tuya_dp(
-        dp_id=101,
+        dp_id=101,  # W * 10 (deciwatt)
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.instantaneous_demand.name
         + EnergyDirectionHelper.UNSIGNED_ATTR_SUFFIX,
     )
     .tuya_dp(
-        dp_id=105,
+        dp_id=105,  # W * 10 (deciwatt)
         ep_attribute=TuyaMetering.ep_attribute,
         attribute_name=TuyaMetering.AttributeDefs.instantaneous_demand.name
         + EnergyDirectionHelper.UNSIGNED_ATTR_SUFFIX,
         endpoint_id=Channel.B,
     )
     .tuya_dp(
-        dp_id=110,
+        dp_id=110,  # % (power factor)
         ep_attribute=TuyaElectricalMeasurement.ep_attribute,
         attribute_name=TuyaElectricalMeasurement.AttributeDefs.power_factor.name,
     )
     .tuya_dp(
-        dp_id=121,
+        dp_id=121,  # % (power factor)
         ep_attribute=TuyaElectricalMeasurement.ep_attribute,
         attribute_name=TuyaElectricalMeasurement.AttributeDefs.power_factor.name,
         endpoint_id=Channel.B,
     )
     .tuya_dp(
-        dp_id=113,
+        dp_id=113,  # A * 1000 (milliampre)
         ep_attribute=TuyaElectricalMeasurement.ep_attribute,
         attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_current.name,
     )
     .tuya_dp(
-        dp_id=114,
+        dp_id=114,  # A * 1000 (milliampre)
         ep_attribute=TuyaElectricalMeasurement.ep_attribute,
         attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_current.name,
         endpoint_id=Channel.B,
     )
     .tuya_dp(
-        dp_id=112,
+        dp_id=112,  # V * 10 (decivolt)
         ep_attribute=TuyaElectricalMeasurement.ep_attribute,
         attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_voltage.name,
     )
     .tuya_dp_attribute(
-        dp_id=102,
+        dp_id=102,  # 0=Forward/1=Reverse
         attribute_name=ENERGY_DIRECTION,
         type=TuyaEnergyDirection,
         converter=lambda x: TuyaEnergyDirection(x),
     )
     .tuya_dp_attribute(
-        dp_id=104,
+        dp_id=104,  # 0=Forward/1=Reverse
         attribute_name=ENERGY_DIRECTION + Channel.attr_suffix(Channel.B),
         type=TuyaEnergyDirection,
         converter=lambda x: TuyaEnergyDirection(x),
     )
     .tuya_number(
-        dp_id=129,
+        dp_id=129,  # seconds
         attribute_name="reporting_interval",
         type=t.uint32_t_be,
         unit=UnitOfTime.SECONDS,
@@ -859,7 +881,7 @@ class TuyaMetering(
         entity_type=EntityType.CONFIG,
     )
     .tuya_number(
-        dp_id=122,
+        dp_id=122,  # % * 10 (1 decimal precision)
         attribute_name="ac_frequency_coefficient",
         type=t.uint32_t_be,
         unit=PERCENTAGE,
@@ -873,7 +895,7 @@ class TuyaMetering(
         initially_disabled=True,
     )
     .tuya_number(
-        dp_id=119,
+        dp_id=119,  # % * 10 (1 decimal precision)
         attribute_name="current_summ_delivered_coefficient",
         type=t.uint32_t_be,
         unit=PERCENTAGE,
@@ -887,7 +909,7 @@ class TuyaMetering(
         initially_disabled=True,
     )
     .tuya_number(
-        dp_id=125,
+        dp_id=125,  # % * 10 (1 decimal precision)
         attribute_name="current_summ_delivered_coefficient"
         + Channel.attr_suffix(Channel.B),
         type=t.uint32_t_be,
@@ -902,7 +924,7 @@ class TuyaMetering(
         initially_disabled=True,
     )
     .tuya_number(
-        dp_id=127,
+        dp_id=127,  # % * 10 (1 decimal precision)
         attribute_name="current_summ_received_coefficient",
         type=t.uint32_t_be,
         unit=PERCENTAGE,
@@ -916,7 +938,7 @@ class TuyaMetering(
         initially_disabled=True,
     )
     .tuya_number(
-        dp_id=128,
+        dp_id=128,  # % * 10 (1 decimal precision)
         attribute_name="current_summ_received_coefficient"
         + Channel.attr_suffix(Channel.B),
         type=t.uint32_t_be,
@@ -931,7 +953,7 @@ class TuyaMetering(
         initially_disabled=True,
     )
     .tuya_number(
-        dp_id=118,
+        dp_id=118,  # % * 10 (1 decimal precision)
         attribute_name="instantaneous_demand_coefficient",
         type=t.uint32_t_be,
         unit=PERCENTAGE,
@@ -945,7 +967,7 @@ class TuyaMetering(
         initially_disabled=True,
     )
     .tuya_number(
-        dp_id=124,
+        dp_id=124,  # % * 10 (1 decimal precision)
         attribute_name="instantaneous_demand_coefficient"
         + Channel.attr_suffix(Channel.B),
         type=t.uint32_t_be,
@@ -960,7 +982,7 @@ class TuyaMetering(
         initially_disabled=True,
     )
     .tuya_number(
-        dp_id=117,
+        dp_id=117,  # % * 10 (1 decimal precision)
         attribute_name="rms_current_coefficient",
         type=t.uint32_t_be,
         unit=PERCENTAGE,
@@ -974,7 +996,7 @@ class TuyaMetering(
         initially_disabled=True,
     )
     .tuya_number(
-        dp_id=123,
+        dp_id=123,  # % * 10 (1 decimal precision)
         attribute_name="rms_current_coefficient" + Channel.attr_suffix(Channel.B),
         type=t.uint32_t_be,
         unit=PERCENTAGE,
@@ -988,7 +1010,7 @@ class TuyaMetering(
         initially_disabled=True,
     )
     .tuya_number(
-        dp_id=116,
+        dp_id=116,  # % * 10 (1 decimal precision)
         attribute_name="rms_voltage_coefficient",
         type=t.uint32_t_be,
         unit=PERCENTAGE,
@@ -1001,5 +1023,239 @@ class TuyaMetering(
         entity_type=EntityType.CONFIG,
         initially_disabled=True,
     )
+    .add_to_registry()
+)
+
+
+(
+    ### Tuya PC321-Z-TY 3 phase energy meter.
+    TuyaQuirkBuilder("_TZE200_nslr42tt", "TS0601")
+    .tuya_enchantment()
+    .adds_endpoint(Channel.B)
+    .adds_endpoint(Channel.C)
+    .adds_endpoint(Channel.Total)
+    .adds(EnergyMeterConfiguration)
+    .adds(TuyaElectricalMeasurement)
+    .adds(TuyaElectricalMeasurement, endpoint_id=Channel.Total)
+    .adds(TuyaMetering)
+    .adds(TuyaMetering, endpoint_id=Channel.B)
+    .adds(TuyaMetering, endpoint_id=Channel.C)
+    .adds(TuyaMetering, endpoint_id=Channel.Total)
+    .tuya_temperature(dp_id=133, scale=10)
+    .tuya_sensor(
+        dp_id=134,
+        attribute_name="device_status",
+        type=t.int32s,
+        translation_key="device_status",
+        fallback_name="Device status",
+    )
+    .tuya_dp(
+        dp_id=101,  # Wh (watt/hour)
+        ep_attribute=TuyaMetering.ep_attribute,
+        attribute_name=TuyaMetering.AttributeDefs.current_summ_delivered.name,
+        converter=lambda x: x * TuyaMetering.WATT_HOUR_MULTIPLIER,
+    )
+    .tuya_dp(
+        dp_id=111,  # Wh (watt/hour)
+        ep_attribute=TuyaMetering.ep_attribute,
+        attribute_name=TuyaMetering.AttributeDefs.current_summ_delivered.name,
+        converter=lambda x: x * TuyaMetering.WATT_HOUR_MULTIPLIER,
+        endpoint_id=Channel.B,
+    )
+    .tuya_dp(
+        dp_id=121,  # Wh (watt/hour)
+        ep_attribute=TuyaMetering.ep_attribute,
+        attribute_name=TuyaMetering.AttributeDefs.current_summ_delivered.name,
+        converter=lambda x: x * TuyaMetering.WATT_HOUR_MULTIPLIER,
+        endpoint_id=Channel.C,
+    )
+    .tuya_dp(
+        dp_id=1,  # Wh * 10 (deciwatt/hour)
+        ep_attribute=TuyaMetering.ep_attribute,
+        attribute_name=TuyaMetering.AttributeDefs.current_summ_delivered.name,
+        converter=lambda x: x * TuyaMetering.DECIWATT_HOUR_MULTIPLIER,
+        endpoint_id=Channel.Total,
+    )
+    .tuya_dp(
+        dp_id=9,  # W (watt)
+        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+        attribute_name=TuyaElectricalMeasurement.AttributeDefs.total_active_power.name,
+        converter=lambda x: x * TuyaElectricalMeasurement.WATT_MULTIPLIER,
+    )
+    .tuya_dp(
+        dp_id=131,  # A * 1000 (milliampre)
+        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+        attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_current.name,
+        endpoint_id=Channel.Total,
+    )
+    .tuya_dp_multi(
+        dp_id=6,
+        attribute_mapping=[
+            DPToAttributeMapping(
+                ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+                attribute_name=TuyaElectricalMeasurement.AttributeDefs.active_power.name,
+                converter=lambda x: PowerPhaseVariant3.power_W(x)
+                * TuyaElectricalMeasurement.WATT_MULTIPLIER,  # W (watt)
+            ),
+            DPToAttributeMapping(
+                ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+                attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_voltage.name,
+                converter=PowerPhaseVariant2.voltage_dV,  # V * 10 (decivolt)
+            ),
+            DPToAttributeMapping(
+                ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+                attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_current.name,
+                converter=PowerPhaseVariant2.current_mA,  # A * 1000 (milliampre)
+            ),
+        ],
+    )
+    .tuya_dp_multi(
+        dp_id=7,
+        attribute_mapping=[
+            DPToAttributeMapping(
+                ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+                attribute_name=TuyaElectricalMeasurement.AttributeDefs.active_power_ph_b.name,
+                converter=lambda x: PowerPhaseVariant3.power_W(x)
+                * TuyaElectricalMeasurement.WATT_MULTIPLIER,  # W (watt)
+            ),
+            DPToAttributeMapping(
+                ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+                attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_voltage_ph_b.name,
+                converter=PowerPhaseVariant2.voltage_dV,  # V * 10 (decivolt)
+            ),
+            DPToAttributeMapping(
+                ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+                attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_current_ph_b.name,
+                converter=PowerPhaseVariant2.current_mA,  # A * 1000 (milliampre)
+            ),
+        ],
+    )
+    .tuya_dp_multi(
+        dp_id=7,
+        attribute_mapping=[
+            DPToAttributeMapping(
+                ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+                attribute_name=TuyaElectricalMeasurement.AttributeDefs.active_power_ph_c.name,
+                converter=lambda x: PowerPhaseVariant3.power_W(x)
+                * TuyaElectricalMeasurement.WATT_MULTIPLIER,  # W (watt)
+            ),
+            DPToAttributeMapping(
+                ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+                attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_voltage_ph_c.name,
+                converter=PowerPhaseVariant2.voltage_dV,  # V * 10 (decivolt)
+            ),
+            DPToAttributeMapping(
+                ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+                attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_current_ph_c.name,
+                converter=PowerPhaseVariant2.current_mA,  # A * 1000 (milliampre)
+            ),
+        ],
+    )
+    .tuya_dp(
+        dp_id=102,  # % (power factor)
+        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+        attribute_name=TuyaElectricalMeasurement.AttributeDefs.power_factor.name,
+    )
+    .tuya_dp(
+        dp_id=112,  # % (power factor)
+        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+        attribute_name=TuyaElectricalMeasurement.AttributeDefs.power_factor_ph_b.name,
+    )
+    .tuya_dp(
+        dp_id=122,  # % (power factor)
+        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+        attribute_name=TuyaElectricalMeasurement.AttributeDefs.power_factor_ph_c.name,
+    )
+    .skip_configuration()
+    .add_to_registry()
+)
+
+
+(
+    ### Tuya PC321-Z-TY 3 phase energy meter.
+    TuyaQuirkBuilder("_TZE204_v9hkz2yn", "TS0601")
+    .applies_to("_TZE200_v9hkz2yn", "TS0601")
+    .tuya_enchantment()
+    .adds(EnergyMeterConfiguration)
+    .adds(TuyaElectricalMeasurement)
+    .adds(TuyaMetering)
+    .tuya_dp(
+        dp_id=1,  # Wh * 10 (deciwatt/hour)
+        ep_attribute=TuyaMetering.ep_attribute,
+        attribute_name=TuyaMetering.AttributeDefs.current_summ_delivered.name,
+        converter=lambda x: x * TuyaMetering.DECIWATT_HOUR_MULTIPLIER,
+    )
+    .tuya_dp(
+        dp_id=2,  # Wh * 10 (deciwatt/hour)
+        ep_attribute=TuyaMetering.ep_attribute,
+        attribute_name=TuyaMetering.AttributeDefs.current_summ_received.name,
+        converter=lambda x: x * TuyaMetering.DECIWATT_HOUR_MULTIPLIER,
+    )
+    .tuya_dp(
+        dp_id=15,  # % (power factor)
+        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+        attribute_name=TuyaElectricalMeasurement.AttributeDefs.power_factor.name,
+    )
+    .tuya_dp(
+        dp_id=101,  # Hz * 100
+        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+        attribute_name=TuyaElectricalMeasurement.AttributeDefs.ac_frequency.name,
+    )
+    .tuya_dp(
+        dp_id=102,  # V * 10 (decivolt)
+        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+        attribute_name=TuyaElectricalMeasurement.AttributeDefs.ac_frequency.name,
+    )
+    .tuya_dp(
+        dp_id=103,  # A * 1000 (milliampre)
+        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+        attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_current.name,
+    )
+    .tuya_dp(
+        dp_id=104,  # W (watt)
+        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+        attribute_name=TuyaElectricalMeasurement.AttributeDefs.active_power.name,
+        converter=lambda x: x * TuyaElectricalMeasurement.WATT_MULTIPLIER,
+    )
+    .tuya_dp(
+        dp_id=105,  # V * 10 (decivolt)
+        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+        attribute_name=TuyaElectricalMeasurement.AttributeDefs.ac_frequency_ph_b.name,
+    )
+    .tuya_dp(
+        dp_id=106,  # A * 1000 (milliampre)
+        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+        attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_current_ph_b.name,
+    )
+    .tuya_dp(
+        dp_id=107,  # W (watt)
+        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+        attribute_name=TuyaElectricalMeasurement.AttributeDefs.active_power_ph_b.name,
+        converter=lambda x: x * TuyaElectricalMeasurement.WATT_MULTIPLIER,
+    )
+    .tuya_dp(
+        dp_id=108,  # V * 10 (decivolt)
+        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+        attribute_name=TuyaElectricalMeasurement.AttributeDefs.ac_frequency_ph_c.name,
+    )
+    .tuya_dp(
+        dp_id=109,  # A * 1000 (milliampre)
+        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+        attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_current_ph_c.name,
+        endpoint_id=Channel.Total,
+    )
+    .tuya_dp(
+        dp_id=110,  # W (watt)
+        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+        attribute_name=TuyaElectricalMeasurement.AttributeDefs.active_power_ph_c.name,
+        converter=lambda x: x * TuyaElectricalMeasurement.WATT_MULTIPLIER,
+    )
+    .tuya_dp(
+        dp_id=111,  # W (watt)
+        ep_attribute=TuyaElectricalMeasurement.ep_attribute,
+        attribute_name=TuyaElectricalMeasurement.AttributeDefs.total_active_power.name,
+        converter=lambda x: x * TuyaElectricalMeasurement.WATT_MULTIPLIER,
+    )
+    .skip_configuration()
     .add_to_registry()
 )

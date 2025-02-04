@@ -1081,6 +1081,7 @@ class TuyaSmartRemoteOnOffCluster(OnOff, EventableCluster):
 
 class PowerPhaseVariant1:
     """Methods for extracting values from a Tuya Power Phase datapoint.
+
     'TS0601': (
         '_TZE204_ac0fhfiq',
         '_TZE200_qhlxve78',
@@ -1101,6 +1102,7 @@ class PowerPhaseVariant1:
 
 class PowerPhaseVariant2:
     """Methods for extracting values from a Tuya Power Phase datapoint.
+
     'TS0601': (
         '_TZE200_lsanae15',
         '_TZE204_lsanae15'
@@ -1128,6 +1130,7 @@ class PowerPhaseVariant2:
 
 class PowerPhaseVariant3:
     """Methods for extracting values from a Tuya Power Phase datapoint.
+    
     'TS0601': (
         '_TZE204_ac0fhfiq',
         '_TZE200_qhlxve78',

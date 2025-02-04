@@ -15,7 +15,7 @@ zhaquirks.setup()
 
 
 @pytest.mark.parametrize(
-    "model,manuf,channels,bidirectional",
+    "model,manuf,channels,direction_attrs",
     [
         (
             "_TZE204_cjbofhxw",
@@ -26,6 +26,8 @@ zhaquirks.setup()
         ("_TZE204_ac0fhfiq", "TS0601", {1}, True),
         ("_TZE200_rks0sgb7", "TS0601", {1, 2, 11}, True),
         ("_TZE204_81yrt3lo", "TS0601", {1, 2, 11}, True),
+        ("_TZE200_nslr42tt", "TS0601", {1, 2, 3, 10}, True),
+        ("_TZE204_v9hkz2yn", "TS0601", {1}, True),
     ],
 )
 async def test_tuya_energy_meter_quirk_energy_direction_align(
@@ -33,7 +35,7 @@ async def test_tuya_energy_meter_quirk_energy_direction_align(
     model: str,
     manuf: str,
     channels,
-    bidirectional: bool,
+    direction_attrs: bool,
 ):
     """Test Tuya Energy Meter Quirk energy direction align in ElectricalMeasurement and Metering clusters."""
     quirked_device = zigpy_device_from_v2_quirk(model, manuf)
@@ -45,7 +47,10 @@ async def test_tuya_energy_meter_quirk_energy_direction_align(
 
     CHANNEL_A = 1
     CHANNEL_B = 2
+    CHANNEL_C = 3
+    CHANNEL_TOTAL = 10
     CHANNEL_AB = 11
+    CHANNEL_ABC = 12
 
     UNSIGNED_ATTR_SUFFIX = "_attr_unsigned"
 
@@ -53,8 +58,11 @@ async def test_tuya_energy_meter_quirk_energy_direction_align(
     POWER = 100
     VOLTAGE = 230
     SUMM_RECEIVED = 15000
+
     DIRECTION_A = REVERSE
     DIRECTION_B = FORWARD
+    DIRECTION_C = FORWARD
+    DIRECTION_TOTAL = FORWARD
 
     ep = quirked_device.endpoints[1]
 
@@ -80,7 +88,7 @@ async def test_tuya_energy_meter_quirk_energy_direction_align(
             ),
         }
 
-    if bidirectional:
+    if direction_attrs:
         # verify the direction attribute is present
         attr = getattr(ep.tuya_manufacturer.AttributeDefs, ENERGY_DIRECTION_ATTR, None)
         assert attr is not None
@@ -101,7 +109,7 @@ async def test_tuya_energy_meter_quirk_energy_direction_align(
         )
         assert attr is None
 
-    if bidirectional and CHANNEL_B in channels:
+    if direction_attrs and CHANNEL_B in channels:
         # verify the direction B attribute is present
         attr = getattr(
             ep.tuya_manufacturer.AttributeDefs,
@@ -144,8 +152,12 @@ async def test_tuya_energy_meter_quirk_energy_direction_align(
             direction = DIRECTION_A
         elif channel == CHANNEL_B:
             direction = DIRECTION_B
-        elif channel == CHANNEL_AB:
-            # updates to channel AB will occur as a result of the device updates to channels A & B
+        elif channel == CHANNEL_C:
+            direction = DIRECTION_C
+        elif channel == CHANNEL_TOTAL:
+            direction = DIRECTION_TOTAL
+        elif channel in (CHANNEL_AB, CHANNEL_ABC):
+            # virtual channel updates occur as a result of updates to their source channels
             continue
         assert direction is not None
 
@@ -190,7 +202,7 @@ async def test_tuya_energy_meter_quirk_energy_direction_align(
         assert (
             listeners[channel]["electrical_measurement"].attribute_updates[2][1]
             == POWER
-            if not bidirectional or direction == FORWARD
+            if not direction_attrs or direction == FORWARD
             else -POWER
         )
         assert (
@@ -222,7 +234,7 @@ async def test_tuya_energy_meter_quirk_energy_direction_align(
         )
         assert (
             listeners[channel]["metering"].attribute_updates[0][1] == POWER
-            if not bidirectional or direction == FORWARD
+            if not direction_attrs or direction == FORWARD
             else -POWER
         )
         assert (
@@ -275,14 +287,33 @@ async def test_tuya_energy_meter_quirk_energy_direction_align(
 @pytest.mark.parametrize(
     "model,manuf,mitigation_config,basic_cluster_match",
     [
-        ("_TZE204_cjbofhxw", "TS0601", 0, None),  # Automatic
-        ("_TZE204_ac0fhfiq", "TS0601", 0, None),  # Automatic
-        ("_TZE200_rks0sgb7", "TS0601", 1, None),  # Disabled
+        ("_TZE204_81yrt3lo", "TS0601", 0, None),  # Automatic
+        ("_TZE204_81yrt3lo", "TS0601", 1, None),  # Disabled
         ("_TZE204_81yrt3lo", "TS0601", 2, None),  # Enabled
         (
             "_TZE204_81yrt3lo",
             "TS0601",
             0,  # Automatic
+            {
+                "app_version": 74,
+                "hw_version": 1,
+                "stack_version": 0,
+            },
+        ),
+        (
+            "_TZE204_81yrt3lo",
+            "TS0601",
+            1,  # Disabled
+            {
+                "app_version": 74,
+                "hw_version": 1,
+                "stack_version": 0,
+            },
+        ),
+        (
+            "_TZE204_81yrt3lo",
+            "TS0601",
+            2,  # Enabled
             {
                 "app_version": 74,
                 "hw_version": 1,
