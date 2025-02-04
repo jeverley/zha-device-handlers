@@ -1,6 +1,6 @@
 """Tuya devices."""
 
-from collections.abc import Callable
+from collections.abc import ByteString, Callable
 import dataclasses
 import datetime
 import enum
@@ -1077,6 +1077,78 @@ class TuyaSmartRemoteOnOffCluster(OnOff, EventableCluster):
             self.listener_event(
                 ZHA_SEND_EVENT, self.press_type.get(press_type, "unknown"), []
             )
+
+
+class PowerPhaseVariant1:
+    """Methods for extracting values from a Tuya Power Phase datapoint.
+    'TS0601': (
+        '_TZE204_ac0fhfiq',
+        '_TZE200_qhlxve78',
+        '_TZE204_qhlxve78'
+    )
+    """
+
+    @staticmethod
+    def voltage_dV(data: ByteString) -> t.uint_t:
+        """Return the voltage in decivolts (V * 10)."""
+        return data[14] | (data[13] << 8)
+
+    @staticmethod
+    def current_mA(data: ByteString) -> t.uint_t:
+        """Return the current in milliamperes (A * 1000)."""
+        return data[12] | (data[11] << 8)
+
+
+class PowerPhaseVariant2:
+    """Methods for extracting values from a Tuya Power Phase datapoint.
+    'TS0601': (
+        '_TZE200_lsanae15',
+        '_TZE204_lsanae15'
+    )
+    """
+
+    @staticmethod
+    def voltage_dV(data: ByteString) -> t.uint_t:
+        """Return the voltage in decivolts (V * 10)."""
+        return data[1] | (data[0] << 8)
+
+    @staticmethod
+    def current_mA(data: ByteString) -> t.uint_t:
+        """Return the current in milliamperes (A * 1000)."""
+        return data[4] | (data[3] << 8)
+
+    @staticmethod
+    def power_W(data: ByteString) -> int:
+        """Return the signed power in watts (W)."""
+        power = data[7] | (data[6] << 8)
+        if power > 0x7FFF:
+            power = (0x999A - power) * -1
+        return power
+
+
+class PowerPhaseVariant3:
+    """Methods for extracting values from a Tuya Power Phase datapoint.
+    'TS0601': (
+        '_TZE204_ac0fhfiq',
+        '_TZE200_qhlxve78',
+        '_TZE204_qhlxve78'
+    )
+    """
+
+    @staticmethod
+    def voltage_dV(data: ByteString) -> t.uint_t:
+        """Return the voltage in decivolts (V * 10)."""
+        return (data[0] << 8) | data[1]
+
+    @staticmethod
+    def current_mA(data: ByteString) -> t.uint_t:
+        """Return the current in milliamperes (A * 1000)."""
+        return (data[2] << 16) | (data[3] << 8) | data[4]
+
+    @staticmethod
+    def power_W(data: ByteString) -> int:
+        """Return the power in watts (W)."""
+        return (data[5] << 16) | (data[6] << 8) | data[7]
 
 
 MULTIPLIER = 0x0301

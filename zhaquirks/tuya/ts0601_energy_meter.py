@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Final
+from typing import Any, Final, Type
 
 from zigpy.quirks.v2.homeassistant import PERCENTAGE, EntityType, UnitOfTime
 import zigpy.types as t
@@ -14,6 +14,7 @@ from zigpy.zcl.foundation import BaseAttributeDefs, ZCLAttributeDef
 from zhaquirks import LocalDataCluster
 from zhaquirks.tuya import (
     DPToAttributeMapping,
+    PowerPhaseVariant3,
     TuyaLocalCluster,
     TuyaZBElectricalMeasurement,
     TuyaZBMeteringClusterWithUnit,
@@ -31,6 +32,7 @@ class Channel(t.enum8):
     B = 2
     C = 3
     AB = 11
+    ABC = 12
 
     @classmethod
     def attr_suffix(cls, channel: Channel | None) -> str:
@@ -46,7 +48,7 @@ class Channel(t.enum8):
         B: "_ch_b",
         C: "_ch_c",
     }
-    __VIRTUAL_CHANNELS: set[Channel] = {AB}
+    __VIRTUAL_CHANNELS: set[Channel] = {AB, ABC}
 
 
 class TuyaEnergyDirection(t.enum1):
@@ -54,25 +56,6 @@ class TuyaEnergyDirection(t.enum1):
 
     Forward = 0x0
     Reverse = 0x1
-
-
-class TuyaPowerPhase:
-    """Methods for extracting values from a Tuya Power Phase datapoint."""
-
-    @staticmethod
-    def voltage(value) -> t.uint_t:
-        """Return the voltage value."""
-        return (value[0] << 8) | value[1]
-
-    @staticmethod
-    def current(value) -> t.uint_t:
-        """Return the current value."""
-        return (value[2] << 16) | (value[3] << 8) | value[4]
-
-    @staticmethod
-    def power(value) -> int:
-        """Return the power value."""
-        return (value[5] << 16) | (value[6] << 8) | value[7] * 10
 
 
 class EnergyDirectionMitigation(t.enum8):
@@ -87,7 +70,7 @@ class VirtualChannelConfig(t.enum8):
     """Enum type for virtual channel config attribute."""
 
     none = 0
-    A_plus_B = 1
+    Total = 1
     A_minus_B = 2
     B_minus_A = 3
 
@@ -172,6 +155,10 @@ class MeterClusterHelper:
             return None
         return cluster.get(attr_name, default)
 
+    def is_attr_type(self, attr_name: str, compare_type: Type) -> bool:
+        """Return True if the attribute type is a subclass of the compare type."""
+        return issubclass(getattr(self.AttributeDefs, attr_name).type, compare_type)
+
     @property
     def mcu_cluster(self) -> TuyaMCUCluster | None:
         """Return the MCU cluster."""
@@ -190,6 +177,11 @@ class EnergyDirectionHelper(MeterClusterHelper):
 
     UNSIGNED_ATTR_SUFFIX: Final = "_attr_unsigned"
 
+    def __init__(self, *args, **kwargs):
+        """Init."""
+        self._energy_direction: TuyaEnergyDirection | None = None
+        super().__init__(*args, **kwargs)
+
     def align_with_energy_direction(self, value: int | None) -> int | None:
         """Align the value with current energy_direction."""
         if value and (
@@ -205,19 +197,33 @@ class EnergyDirectionHelper(MeterClusterHelper):
     def energy_direction(self) -> TuyaEnergyDirection | None:
         """Return the channel energy direction."""
         if not self.mcu_cluster:
-            return None
+            return self._energy_direction
         try:
             return self.mcu_cluster.get(
                 ENERGY_DIRECTION + Channel.attr_suffix(self.channel)
             )
         except KeyError:
-            return None
+            return self._energy_direction
 
     def energy_direction_handler(self, attr_name: str, value) -> tuple[str, Any]:
         """Unsigned attributes are aligned with energy direction."""
+        if attr_name not in self._EXTENSIVE_ATTRIBUTES or not self.is_attr_type(
+            attr_name, t.int_t
+        ):
+            return attr_name, value
+
+        # unsigned attribtues have the energy direction applied
         if attr_name.endswith(self.UNSIGNED_ATTR_SUFFIX):
             attr_name = attr_name.removesuffix(self.UNSIGNED_ATTR_SUFFIX)
             value = self.align_with_energy_direction(value)
+
+        # the cluster energy direction is updated (used in virtual channel calculations on devices with native signed values)
+        if value is not None:
+            self._energy_direction = (
+                TuyaEnergyDirection.Reverse
+                if value < 0
+                else TuyaEnergyDirection.Forward
+            )
         return attr_name, value
 
 
@@ -313,10 +319,15 @@ class VirtualChannelHelper(EnergyDirectionHelper, MeterClusterHelper):
         tuple[Channel, VirtualChannelConfig],
         tuple[tuple[Channel], Callable, Channel | None],
     ] = {
-        (Channel.AB, VirtualChannelConfig.A_plus_B): (
+        (Channel.AB, VirtualChannelConfig.Total): (
             (Channel.A, Channel.B),
             lambda a, b: a + b,
             Channel.B,
+        ),
+        (Channel.ABC, VirtualChannelConfig.Total): (
+            (Channel.A, Channel.B, Channel.C),
+            lambda a, b, c: a + b + c,
+            Channel.C,
         ),
         (Channel.AB, VirtualChannelConfig.A_minus_B): (
             (Channel.A, Channel.B),
@@ -377,10 +388,6 @@ class VirtualChannelHelper(EnergyDirectionHelper, MeterClusterHelper):
             self.endpoint.device.endpoints.keys()
         )
 
-    def _is_attr_uint(self, attr_name: str) -> bool:
-        """Return True if the attribute type is an unsigned integer."""
-        return issubclass(getattr(self.AttributeDefs, attr_name).type, t.uint_t)
-
     def _get_source_values(
         self,
         attr_name: str,
@@ -390,7 +397,8 @@ class VirtualChannelHelper(EnergyDirectionHelper, MeterClusterHelper):
         """Get source values from channel clusters."""
         return tuple(
             cluster.align_with_energy_direction(cluster.get(attr_name))
-            if align_uint_with_energy_direction and self._is_attr_uint(attr_name)
+            if align_uint_with_energy_direction
+            and self.is_attr_type(attr_name, t.uint_t)
             else cluster.get(attr_name)
             for channel in channels
             for cluster in [self.get_cluster(channel)]
@@ -583,18 +591,18 @@ class TuyaMetering(
             DPToAttributeMapping(
                 ep_attribute=TuyaElectricalMeasurement.ep_attribute,
                 attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_voltage.name,
-                converter=TuyaPowerPhase.voltage,
+                converter=PowerPhaseVariant3.voltage_dV,
             ),
             DPToAttributeMapping(
                 ep_attribute=TuyaElectricalMeasurement.ep_attribute,
                 attribute_name=TuyaElectricalMeasurement.AttributeDefs.rms_current.name,
-                converter=TuyaPowerPhase.current,
+                converter=PowerPhaseVariant3.current_mA,
             ),
             DPToAttributeMapping(
                 ep_attribute=TuyaElectricalMeasurement.ep_attribute,
                 attribute_name=TuyaElectricalMeasurement.AttributeDefs.active_power.name
                 + EnergyDirectionHelper.UNSIGNED_ATTR_SUFFIX,
-                converter=TuyaPowerPhase.power,
+                converter=lambda x: PowerPhaseVariant3.power_W(x) * 10,
             ),
         ],
     )
