@@ -14,6 +14,21 @@ from zhaquirks.tuya.mcu import TuyaMCUCluster
 zhaquirks.setup()
 
 
+ENERGY_DIRECTION_ATTR = "energy_direction"
+ENERGY_DIRECTION_ATTR_B = "energy_direction_ch_b"
+FORWARD = 0
+REVERSE = 1
+
+CHANNEL_A = 1
+CHANNEL_B = 2
+CHANNEL_C = 3
+CHANNEL_TOTAL = 10
+CHANNEL_AB = 11
+CHANNEL_ABC = 12
+
+UNSIGNED_ATTR_SUFFIX = "_attr_unsigned"
+
+
 @pytest.mark.parametrize(
     "model,manuf,channels,direction_attrs",
     [
@@ -26,8 +41,8 @@ zhaquirks.setup()
         ("_TZE204_ac0fhfiq", "TS0601", {1}, True),
         ("_TZE200_rks0sgb7", "TS0601", {1, 2, 11}, True),
         ("_TZE204_81yrt3lo", "TS0601", {1, 2, 11}, True),
-        ("_TZE200_nslr42tt", "TS0601", {1, 2, 3, 10}, True),
-        ("_TZE204_v9hkz2yn", "TS0601", {1}, True),
+        ("_TZE200_nslr42tt", "TS0601", {1, 2, 3, 10}, False),
+        ("_TZE204_v9hkz2yn", "TS0601", {1}, False),
     ],
 )
 async def test_tuya_energy_meter_quirk_energy_direction_align(
@@ -39,20 +54,6 @@ async def test_tuya_energy_meter_quirk_energy_direction_align(
 ):
     """Test Tuya Energy Meter Quirk energy direction align in ElectricalMeasurement and Metering clusters."""
     quirked_device = zigpy_device_from_v2_quirk(model, manuf)
-
-    ENERGY_DIRECTION_ATTR = "energy_direction"
-    ENERGY_DIRECTION_ATTR_B = "energy_direction_ch_b"
-    FORWARD = 0
-    REVERSE = 1
-
-    CHANNEL_A = 1
-    CHANNEL_B = 2
-    CHANNEL_C = 3
-    CHANNEL_TOTAL = 10
-    CHANNEL_AB = 11
-    CHANNEL_ABC = 12
-
-    UNSIGNED_ATTR_SUFFIX = "_attr_unsigned"
 
     CURRENT = 5
     POWER = 100
@@ -331,8 +332,6 @@ async def test_tuya_energy_meter_quirk_energy_direction_delay_mitigation(
 ):
     """Test Tuya Energy Meter Quirk energy direction report mitigation."""
     quirked_device = zigpy_device_from_v2_quirk(model, manuf)
-
-    UNSIGNED_ATTR_SUFFIX = "_attr_unsigned"
 
     POWER_1 = 100
     POWER_2 = 200
