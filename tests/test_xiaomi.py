@@ -1900,6 +1900,90 @@ async def test_xiaomi_e1_roller_window_covering_read_redirection(
     )
 
 
+async def test_xiaomi_e1_roller_write_aware_update_attribute(
+    zigpy_device_from_v2_quirk,
+):
+    """Test Aqara E1 roller AnalogOutput write-aware update_attribute method."""
+    device = zigpy_device_from_v2_quirk(LUMI, "lumi.curtain.acn002")
+
+    window_covering_cluster = device.endpoints[1].window_covering
+    window_covering_listener = ClusterListener(window_covering_cluster)
+
+    analog_cluster = device.endpoints[1].analog_output
+    analog_listener = ClusterListener(analog_cluster)
+    analog_attr = AnalogOutput.AttributeDefs.present_value
+    analog_attr_max = AnalogOutput.AttributeDefs.max_present_value
+
+    # patch write command for a success response
+    patch_analog_write = mock.patch.object(
+        analog_cluster,
+        "_write_attributes",
+        mock.AsyncMock(
+            return_value=(
+                [foundation.WriteAttributesStatusRecord(foundation.Status.SUCCESS)],
+            )
+        ),
+    )
+
+    # patch write command for a fail response
+    patch_analog_write_fail = mock.patch.object(
+        analog_cluster,
+        "_write_attributes",
+        mock.AsyncMock(
+            return_value=(
+                [
+                    foundation.WriteAttributesStatusRecord(
+                        foundation.Status.INVALID_VALUE, analog_attr.id
+                    ),
+                ],
+            )
+        ),
+    )
+
+    with (
+        patch_analog_write,
+    ):
+        # test writing valid and invalid values using name & id
+        await analog_cluster.write_attributes({analog_attr.id: 50})
+        await analog_cluster.write_attributes({analog_attr.name: 60})
+        assert analog_cluster._write_attributes.call_count == 2
+
+        # confirm the two successful writes updated the analog cluster
+        assert len(analog_listener.attribute_updates) == 2
+        assert analog_listener.attribute_updates[0] == (
+            analog_attr.id,
+            50,
+        )
+        assert analog_listener.attribute_updates[1] == (
+            analog_attr.id,
+            60,
+        )
+
+    with (
+        patch_analog_write_fail,
+    ):
+        # test writing valid and invalid values using name & id
+        await analog_cluster.write_attributes({analog_attr_max.id: 100, analog_attr.id: 150})
+        await analog_cluster.write_attributes({analog_attr_max.name: 100, analog_attr.name: 160})
+        assert analog_cluster._write_attributes.call_count == 2
+
+        # confirm the two failed attr writes did not update the analog cluster
+        assert len(analog_listener.attribute_updates) == 4
+
+        # confirm the two successful writes updated the analog cluster
+        assert analog_listener.attribute_updates[2] == (
+            analog_attr_max.id,
+            100,
+        )
+        assert analog_listener.attribute_updates[3] == (
+            analog_attr_max.id,
+            100,
+        )
+
+    # confirm the write invoked update_attributes did not update the covering cluster
+    assert len(window_covering_listener.attribute_updates) == 0
+
+
 @pytest.mark.parametrize("endpoint", [(1), (2)])
 async def test_aqara_t2_relay(zigpy_device_from_quirk, endpoint):
     """Test Aqara T2 relay."""
