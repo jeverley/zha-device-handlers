@@ -37,13 +37,12 @@ class AqaraRollerDriverSpeed(t.enum8):
     High = 0x02
 
 
-class AqaraRollerState(t.enum8):
-    """Aqara roller state values."""
+class AqaraRollerControl(t.enum8):
+    """Aqara roller control attribute values."""
 
-    Closing = 0x00
-    Opening = 0x01
-    Stopped = 0x02
-    Blocked = 0x03
+    Close = 0x00
+    Open = 0x01
+    Stop = 0x02
 
 
 class RedirectAttributes:
@@ -247,7 +246,7 @@ class WindowCoveringRollerE1(RedirectAttributes, CustomCluster, WindowCovering):
         if command_id == WindowCovering.ServerCommandDefs.up_open.id:
             (res,) = await self.endpoint.multistate_output.write_attributes(
                 {
-                    MultistateOutput.AttributeDefs.present_value.name: AqaraRollerState.Opening
+                    MultistateOutput.AttributeDefs.present_value.name: AqaraRollerControl.Open
                 }
             )
             return foundation.GENERAL_COMMANDS[
@@ -257,7 +256,7 @@ class WindowCoveringRollerE1(RedirectAttributes, CustomCluster, WindowCovering):
         if command_id == WindowCovering.ServerCommandDefs.down_close.id:
             (res,) = await self.endpoint.multistate_output.write_attributes(
                 {
-                    MultistateOutput.AttributeDefs.present_value.name: AqaraRollerState.Closing
+                    MultistateOutput.AttributeDefs.present_value.name: AqaraRollerControl.Close
                 }
             )
             return foundation.GENERAL_COMMANDS[
@@ -275,10 +274,10 @@ class WindowCoveringRollerE1(RedirectAttributes, CustomCluster, WindowCovering):
         if command_id == WindowCovering.ServerCommandDefs.stop.id:
             (res,) = await self.endpoint.multistate_output.write_attributes(
                 {
-                    MultistateOutput.AttributeDefs.present_value.name: AqaraRollerState.Stopped
+                    MultistateOutput.AttributeDefs.present_value.name: AqaraRollerControl.Stop
                 }
             )
-            # Current position is read because it is not consistently reported
+            # Read current position because it is not consistently reported
             await self.read_attributes(
                 [self.AttributeDefs.current_position_lift_percentage.id]
             )
