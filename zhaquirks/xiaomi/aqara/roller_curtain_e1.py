@@ -189,7 +189,7 @@ class XiaomiAqaraRollerE1(XiaomiAqaraE1Cluster):
 
 
 class AnalogOutputRollerE1(WriteAwareUpdateAttribute, CustomCluster, AnalogOutput):
-    """Analog output cluster, only used to relay present_value to WindowCovering current_position_lift_percentage."""
+    """AnalogOutput cluster reporting current position and used for writing target position."""
 
     _CONSTANT_ATTRIBUTES = {
         AnalogOutput.AttributeDefs.description.id: "Current position",
@@ -209,7 +209,7 @@ class AnalogOutputRollerE1(WriteAwareUpdateAttribute, CustomCluster, AnalogOutpu
         if attrid == self.AttributeDefs.present_value.id and not is_write:
             self.endpoint.window_covering.update_attribute(
                 WindowCovering.AttributeDefs.current_position_lift_percentage.id,
-                (100 - value),
+                t.uint8_t(100 - value),
             )
 
 
@@ -225,7 +225,7 @@ class WindowCoveringRollerE1(RedirectAttributes, CustomCluster, WindowCovering):
         WindowCovering.AttributeDefs.current_position_lift_percentage: (
             AnalogOutput.AttributeDefs.present_value,
             AnalogOutput,
-            lambda x: 100 - x,
+            lambda x: t.uint8_t(100 - x),
         ),
     }
 
@@ -291,9 +291,10 @@ class WindowCoveringRollerE1(RedirectAttributes, CustomCluster, WindowCovering):
 
 
 class MultistateOutputRollerE1(CustomCluster, MultistateOutput):
-    """Multistate Output cluster which overwrites present_value attribute type.
+    """MultistateOutput cluster used for writing commands (up_open, down_close, stop).
 
-    The device responds with an error when using the standard t.Single type.
+    This requires a change to the present_value attribute type because the device responds
+    with an error when using the standard t.Single type.
     """
 
     class AttributeDefs(MultistateOutput.AttributeDefs):
