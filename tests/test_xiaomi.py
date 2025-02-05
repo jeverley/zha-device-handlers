@@ -1773,6 +1773,10 @@ async def test_xiaomi_e1_roller_commands_2(zigpy_device_from_v2_quirk, command, 
             100 - value,
         )  # confirm the AnalogOutput present_value was updated
 
+    # confirm non-mapped commands return status UNSUP_CLUSTER_COMMAND
+    _, status = await window_covering_cluster.go_to_tilt_percentage(value)
+    assert status == foundation.Status.UNSUP_CLUSTER_COMMAND
+
 
 @pytest.mark.parametrize(
     "attr, expected_value, target_attr, target_cluster",
@@ -1963,8 +1967,12 @@ async def test_xiaomi_e1_roller_write_aware_update_attribute(
         patch_analog_write_fail,
     ):
         # test writing valid and invalid values using name & id
-        await analog_cluster.write_attributes({analog_attr_max.id: 100, analog_attr.id: 150})
-        await analog_cluster.write_attributes({analog_attr_max.name: 100, analog_attr.name: 160})
+        await analog_cluster.write_attributes(
+            {analog_attr_max.id: 100, analog_attr.id: 150}
+        )
+        await analog_cluster.write_attributes(
+            {analog_attr_max.name: 100, analog_attr.name: 160}
+        )
         assert analog_cluster._write_attributes.call_count == 2
 
         # confirm the two failed attr writes did not update the analog cluster

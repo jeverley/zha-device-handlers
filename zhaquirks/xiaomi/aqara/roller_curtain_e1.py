@@ -285,7 +285,9 @@ class WindowCoveringRollerE1(RedirectAttributes, CustomCluster, WindowCovering):
                 foundation.GeneralCommand.Default_Response
             ].schema(command_id=command_id, status=res[0].status)
 
-        return None
+        return foundation.GENERAL_COMMANDS[
+            foundation.GeneralCommand.Default_Response
+        ].schema(command_id=command_id, status=foundation.Status.UNSUP_CLUSTER_COMMAND)
 
 
 class MultistateOutputRollerE1(CustomCluster, MultistateOutput):
