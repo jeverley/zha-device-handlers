@@ -1,8 +1,7 @@
 """Tuya Energy Meter."""
 
-from collections.abc import Callable
 from enum import Enum
-from typing import Any, Dict, Optional, Tuple, Type, Union
+from typing import Any, Callable, Dict, Optional, Tuple, Type, Union
 
 from zigpy.profiles import zgp, zha
 from zigpy.quirks import CustomDevice
@@ -1157,7 +1156,6 @@ class TuyaEnergyMeterManufCluster_1CH(
         TUYA_DP_RMS_VOLTAGE: "_dp_2_attr_update",
     }
 
-
 class TuyaEnergyMeterManufCluster_1CHB(
     TuyaEnergyMeterManufCluster,
     configuration_type=ChannelConfiguration_1CHB,
@@ -1209,7 +1207,54 @@ class TuyaEnergyMeterManufCluster_1CHB(
         TUYA_DP_POWER_FLOW: "_dp_2_attr_update",
         TUYA_DP_POWER_PHASE: "_dp_2_attr_update",
     }
+    
+class TuyaEnergyMeterManufCluster_1CH_Avatto(
+    TuyaEnergyMeterManufCluster,
+    configuration_type=ChannelConfiguration_1CHB,
+):
+    """Avatto Tuya 1 channel bidirectional energy meter manufacturer cluster."""
 
+    TUYA_DP_RMS_CURRENT = 18
+    TUYA_DP_ACTIVE_POWER = 19
+    TUYA_DP_RMS_VOLTAGE = 20
+    TUYA_DP_CURRENT_SUMM_DELIVERED = 104
+    TUYA_DP_CURRENTDAY_CONSUMP_DELIVERED = 105
+
+    dp_to_attribute: Dict[int, DPToAttributeMapping] = {
+        TUYA_DP_CURRENTDAY_CONSUMP_DELIVERED: DPToAttributeMapping(
+            TuyaMetering.ep_attribute,
+            "currentday_consump_delivered",
+            converter=lambda x: x / 1000,
+        ),
+        TUYA_DP_CURRENT_SUMM_DELIVERED: DPToAttributeMapping(
+            TuyaMetering.ep_attribute,
+            "current_summ_delivered",
+            converter=lambda x: x, # / 1000,
+        ),
+        TUYA_DP_ACTIVE_POWER: DPToAttributeMapping(
+            TuyaElectricalMeasurement.ep_attribute,
+            "active_power",
+            converter=lambda x: x, # / 10,
+        ),
+        TUYA_DP_RMS_CURRENT: DPToAttributeMapping(
+            TuyaElectricalMeasurement.ep_attribute,
+            "rms_current",
+            converter=lambda x: x / 1000,
+        ),
+        TUYA_DP_RMS_VOLTAGE: DPToAttributeMapping(
+            TuyaElectricalMeasurement.ep_attribute,
+            "rms_voltage",
+            converter=lambda x: x,
+        ),
+    }
+
+    data_point_handlers = {
+        TUYA_DP_CURRENTDAY_CONSUMP_DELIVERED: "_dp_2_attr_update",
+        TUYA_DP_CURRENT_SUMM_DELIVERED: "_dp_2_attr_update",
+        TUYA_DP_ACTIVE_POWER: "_dp_2_attr_update",
+        TUYA_DP_RMS_CURRENT: "_dp_2_attr_update",
+        TUYA_DP_RMS_VOLTAGE: "_dp_2_attr_update",
+    }
 
 class TuyaEnergyMeterManufCluster_2CHB_MatSeePlus(
     TuyaEnergyMeterManufCluster, configuration_type=ChannelConfiguration_2CHB
@@ -1507,7 +1552,10 @@ class TuyaEnergyMeter_1CH(CustomDevice):
     """Tuya PJ-MGW1203 1 channel energy meter."""
 
     signature = {
-        MODELS_INFO: [("_TZE204_cjbofhxw", "TS0601")],
+        MODELS_INFO: [
+            ("_TZE204_cjbofhxw", "TS0601"),
+            ("_TZE284_cjbofhxw", "TS0601"),
+        ], 
         ENDPOINTS: {
             # <SimpleDescriptor endpoint=1 profile=260 device_type=51
             # device_version=1
@@ -1521,6 +1569,7 @@ class TuyaEnergyMeter_1CH(CustomDevice):
                     Groups.cluster_id,
                     Scenes.cluster_id,
                     TuyaMCUCluster.cluster_id,
+                    0xed00
                 ],
                 OUTPUT_CLUSTERS: [Time.cluster_id, Ota.cluster_id],
             }
@@ -1550,7 +1599,9 @@ class TuyaEnergyMeter_1CHB(CustomDevice):
     """Tuya bidirectional 1 channel energy meter with Zigbee Green Power."""
 
     signature = {
-        MODELS_INFO: [("_TZE204_ac0fhfiq", "TS0601")],
+        MODELS_INFO: [
+            ("_TZE204_ac0fhfiq", "TS0601"),
+        ],
         ENDPOINTS: {
             # <SimpleDescriptor endpoint=1 profile=260 device_type=51
             # device_version=1
@@ -1603,6 +1654,64 @@ class TuyaEnergyMeter_1CHB(CustomDevice):
         }
     }
 
+class TuyaEnergyMeter_1CH_Avatto(CustomDevice):
+    """Avatto Tuya bidirectional 1 channel energy meter with Zigbee Green Power."""
+
+    signature = {
+        MODELS_INFO: [
+            ("_TZE204_goecjd1t", "TS0601"),
+        ],
+        ENDPOINTS: {
+            # <SimpleDescriptor endpoint=1 profile=260 device_type=51
+            # device_version=1
+            # input_clusters=[0, 4, 5, 61184]
+            # output_clusters=[10, 25]>
+            1: {
+                PROFILE_ID: zha.PROFILE_ID,
+                DEVICE_TYPE: zha.DeviceType.SMART_PLUG,
+                INPUT_CLUSTERS: [
+                    Basic.cluster_id,
+                    Groups.cluster_id,
+                    Scenes.cluster_id,
+                    TuyaMCUCluster.cluster_id,
+                ],
+                OUTPUT_CLUSTERS: [Time.cluster_id, Ota.cluster_id],
+            },
+            # <SimpleDescriptor endpoint=242 profile=41440 device_type=97
+            # input_clusters=[]
+            # output_clusters=[33]
+            242: {
+                PROFILE_ID: zgp.PROFILE_ID,
+                DEVICE_TYPE: zgp.DeviceType.PROXY_BASIC,
+                INPUT_CLUSTERS: [],
+                OUTPUT_CLUSTERS: [GreenPowerProxy.cluster_id],
+            },
+        },
+    }
+
+    replacement = {
+        ENDPOINTS: {
+            1: {
+                PROFILE_ID: zha.PROFILE_ID,
+                DEVICE_TYPE: zha.DeviceType.METER_INTERFACE,
+                INPUT_CLUSTERS: [
+                    Basic.cluster_id,
+                    Groups.cluster_id,
+                    Scenes.cluster_id,
+                    TuyaEnergyMeterManufCluster_1CH_Avatto,
+                    TuyaElectricalMeasurement,
+                    TuyaMetering,
+                ],
+                OUTPUT_CLUSTERS: [Time.cluster_id, Ota.cluster_id],
+            },
+            242: {
+                PROFILE_ID: zgp.PROFILE_ID,
+                DEVICE_TYPE: zgp.DeviceType.PROXY_BASIC,
+                INPUT_CLUSTERS: [],
+                OUTPUT_CLUSTERS: [GreenPowerProxy.cluster_id],
+            },
+        }
+    }
 
 class TuyaEnergyMeter_2CHB_EARU(CustomDevice):
     """EARU Tuya PC311-Z-TY bidirectional 2 channel energy meter."""
