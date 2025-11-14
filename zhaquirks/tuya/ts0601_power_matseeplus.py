@@ -252,10 +252,11 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
                 self._power_signed_b,
             )
 
-        # Calculate and update AB (total) power value
+        # Calculate and update the Total (AB) power value
         if (
             attr_name in (self.POWER_B, self.ENERGY_FLOW_B)
             and self._power_signed_a is not None
+            and self._power_signed_b is not None
         ):
             self.endpoint.device.endpoints[
                 ENDPOINT_ID_TOTAL
