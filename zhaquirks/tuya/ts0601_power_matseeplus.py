@@ -19,7 +19,7 @@ from zhaquirks.tuya.mcu import TuyaMCUCluster
 
 ENDPOINT_ID_CT_A = 1
 ENDPOINT_ID_CT_B = 2
-ENDPOINT_ID_TOTAL_AB = 3
+ENDPOINT_ID_TOTAL = 3
 
 
 class TuyaEnergyFlow(t.enum1):
@@ -33,7 +33,7 @@ class MatSeePlusLocalConfig(LocalDataCluster):
     """
     Cluster for storing local configuration.
 
-    Allows users to selectively enable the local mitigations for device firmware bugs.
+    Enables control over the mitigation for delayed flow direction DP reporting.
     """
 
     cluster_id: Final[t.uint16_t] = 0xFC00
@@ -121,17 +121,25 @@ class MatSeePlusElectricalMeasurement(
     }
 
     _VALID_ATTRIBUTES = {
-        TuyaZBElectricalMeasurement.AttributeDefs.ac_frequency.name,
         TuyaZBElectricalMeasurement.AttributeDefs.active_power.name,
         TuyaZBElectricalMeasurement.AttributeDefs.power_factor.name,
         TuyaZBElectricalMeasurement.AttributeDefs.rms_current.name,
-        TuyaZBElectricalMeasurement.AttributeDefs.rms_voltage.name,
     }
 
     def update_attribute(self, attr_name: str, value):
         """Update the cluster attribute."""
         value = self.late_energy_flow_handler(attr_name, value)
         super().update_attribute(attr_name, value)
+
+
+class MatSeePlusElectricalMeasurementTotal(MatSeePlusElectricalMeasurement):
+    """ElectricalMeasurement cluster for MatSeePlus energy meter devices."""
+
+    _VALID_ATTRIBUTES = {
+        TuyaZBElectricalMeasurement.AttributeDefs.active_power.name,
+        TuyaZBElectricalMeasurement.AttributeDefs.ac_frequency.name,
+        TuyaZBElectricalMeasurement.AttributeDefs.rms_voltage.name,
+    }
 
 
 class MatSeePlusMetering(TuyaLocalCluster, TuyaZBMeteringClusterWithUnit):
@@ -142,11 +150,15 @@ class MatSeePlusMetering(TuyaLocalCluster, TuyaZBMeteringClusterWithUnit):
         TuyaZBMeteringClusterWithUnit.AttributeDefs.status.id: 0x00,
         TuyaZBMeteringClusterWithUnit.AttributeDefs.multiplier.id: 1,
         TuyaZBMeteringClusterWithUnit.AttributeDefs.divisor.id: 10000,  # preserves 1 decimal place after power conversion from kW to W
-        TuyaZBMeteringClusterWithUnit.AttributeDefs.summation_formatting.id: (True << 6)
-        | (7 << 3)
+        TuyaZBMeteringClusterWithUnit.AttributeDefs.summation_formatting.id: (
+            True << 6
+        )  # no leading zeros
+        | (7 << 3)  # 7 whole digits
         | 2,  # 2 decimal places
-        TuyaZBMeteringClusterWithUnit.AttributeDefs.demand_formatting.id: (True << 6)
-        | (7 << 3)
+        TuyaZBMeteringClusterWithUnit.AttributeDefs.demand_formatting.id: (
+            True << 6
+        )  # no leading zeros
+        | (7 << 3)  # 7 whole digits
         | 1,  # 1 decimal places
     }
 
@@ -246,9 +258,9 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
             and self._power_signed_a is not None
         ):
             self.endpoint.device.endpoints[
-                ENDPOINT_ID_TOTAL_AB
+                ENDPOINT_ID_TOTAL
             ].electrical_measurement.update_attribute(
-                MatSeePlusElectricalMeasurement.AttributeDefs.active_power.name,
+                MatSeePlusElectricalMeasurementTotal.AttributeDefs.active_power.name,
                 self._power_signed_a + self._power_signed_b,
             )
 
@@ -259,13 +271,15 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
     .also_applies_to("_TZE284_81yrt3lo", "TS0601")
     .tuya_enchantment()
     .adds_endpoint(ENDPOINT_ID_CT_B)
-    .adds_endpoint(ENDPOINT_ID_TOTAL_AB)
-    .adds(MatSeePlusElectricalMeasurement)
+    .adds_endpoint(ENDPOINT_ID_TOTAL)
+    .adds(
+        MatSeePlusElectricalMeasurement,
+    )
     .adds(MatSeePlusElectricalMeasurement, endpoint_id=ENDPOINT_ID_CT_B)
-    .adds(MatSeePlusElectricalMeasurement, endpoint_id=ENDPOINT_ID_TOTAL_AB)
+    .adds(MatSeePlusElectricalMeasurement, endpoint_id=ENDPOINT_ID_TOTAL)
     .adds(MatSeePlusMetering)
     .adds(MatSeePlusMetering, endpoint_id=ENDPOINT_ID_CT_B)
-    .adds(MatSeePlusMetering, endpoint_id=ENDPOINT_ID_TOTAL_AB)
+    .adds(MatSeePlusMetering, endpoint_id=ENDPOINT_ID_TOTAL)
     .adds(MatSeePlusLocalConfig)
     # Metering attributes
     .tuya_dp(
@@ -342,13 +356,15 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
     )
     .tuya_dp(
         dp_id=112,
-        ep_attribute=MatSeePlusElectricalMeasurement.ep_attribute,
-        attribute_name=MatSeePlusElectricalMeasurement.AttributeDefs.rms_voltage.name,
+        ep_attribute=MatSeePlusElectricalMeasurementTotal.ep_attribute,
+        attribute_name=MatSeePlusElectricalMeasurementTotal.AttributeDefs.rms_voltage.name,
+        endpoint=ENDPOINT_ID_TOTAL,
     )
     .tuya_dp(
         dp_id=111,
-        ep_attribute=MatSeePlusElectricalMeasurement.ep_attribute,
-        attribute_name=MatSeePlusElectricalMeasurement.AttributeDefs.ac_frequency.name,
+        ep_attribute=MatSeePlusElectricalMeasurementTotal.ep_attribute,
+        attribute_name=MatSeePlusElectricalMeasurementTotal.AttributeDefs.ac_frequency.name,
+        endpoint=ENDPOINT_ID_TOTAL,
     )
     # Local Configuration attributes
     .switch(
