@@ -358,13 +358,13 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
         dp_id=112,
         ep_attribute=MatSeePlusElectricalMeasurementTotal.ep_attribute,
         attribute_name=MatSeePlusElectricalMeasurementTotal.AttributeDefs.rms_voltage.name,
-        endpoint=ENDPOINT_ID_TOTAL,
+        endpoint_id=ENDPOINT_ID_TOTAL,
     )
     .tuya_dp(
         dp_id=111,
         ep_attribute=MatSeePlusElectricalMeasurementTotal.ep_attribute,
         attribute_name=MatSeePlusElectricalMeasurementTotal.AttributeDefs.ac_frequency.name,
-        endpoint=ENDPOINT_ID_TOTAL,
+        endpoint_id=ENDPOINT_ID_TOTAL,
     )
     # Local Configuration attributes
     .switch(
