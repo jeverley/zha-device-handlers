@@ -384,16 +384,16 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
         MatSeePlusLocalConfig.AttributeDefs.late_energy_flow_a.name,
         MatSeePlusLocalConfig.cluster_id,
         entity_type=EntityType.CONFIG,
-        translation_key="flow_delay_mitigation_a",
-        fallback_name="Flow delay mitigation A",
+        translation_key="mitigate_flow_a_delay",
+        fallback_name="Mitigate flow A delay",
         initially_disabled=False,
     )
     .switch(
         MatSeePlusLocalConfig.AttributeDefs.late_energy_flow_b.name,
         MatSeePlusLocalConfig.cluster_id,
         entity_type=EntityType.CONFIG,
-        translation_key="flow_delay_mitigation_b",
-        fallback_name="Flow delay mitigation B",
+        translation_key="mitigate_flow_b_delay",
+        fallback_name="Mitigate flow B delay",
         initially_disabled=False,
     )
     # Device Configuration attributes
