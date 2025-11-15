@@ -240,7 +240,7 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
 
         if attr_name in (self.POWER_A, self.ENERGY_FLOW_A):
             # Compute the signed CT A power value
-            self._power_signed_a = self._compute_signed_power(
+            power_signed_a = self._compute_signed_power(
                 attr_name,
                 value,
                 power_attr=self.POWER_A,
@@ -251,12 +251,13 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
             )
 
             # Report the signed value to the CT A cluster
-            if self._power_signed_a is not None:
+            if power_signed_a is not None:
+                self._power_signed_a = power_signed_a
                 self._report_power_value(self._power_signed_a, ENDPOINT_ID_CT_A)
 
         if attr_name in (self.POWER_B, self.ENERGY_FLOW_B):
             # Compute the signed CT B power value
-            self._power_signed_b = self._compute_signed_power(
+            power_signed_b = self._compute_signed_power(
                 attr_name,
                 value,
                 power_attr=self.POWER_B,
@@ -267,7 +268,8 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
             )
 
             # Report the signed value to the CT B cluster
-            if self._power_signed_b is not None:
+            if power_signed_b is not None:
+                self._power_signed_b = power_signed_b
                 self._report_power_value(self._power_signed_b, ENDPOINT_ID_CT_B)
 
             # Calculate and report the Total (AB) power value
