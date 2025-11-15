@@ -33,7 +33,7 @@ class MatSeePlusLocalConfig(LocalDataCluster):
     """
     Cluster for storing local configuration.
 
-    Enables control over the mitigation for delayed flow direction DP reporting.
+    Allows control over the delayed energy flow bug mitigation.
     """
 
     cluster_id: Final[t.uint16_t] = 0xFC00
@@ -61,12 +61,13 @@ class MatSeePlusLateFlowMitigation:
     """Cluster logic compensating for delayed PJ-1203A energy flow reporting.
 
     _TZE204_81yrt3lo (app_version: 74, hw_version: 1 and stack_version: 0) has a bug
-    which results in the energy flow direction value associated with current power values
-    being reported in the next reporting interval.
-    This means a change in direction would result in incorrect values.
+    where the current energy flow values are incorrectly emitted during the next reporting interval.
+    This means a change in direction result in incorrect power values.
 
-    When enabled this mitigation holds attribute update values until the subsequent energy flow DP report.
+    When enabled this mitigation holds non-power attribute values until the subsequent interval's attribute report.
     This ensures correct values, but introduces a delay in entity updates.
+
+    This is optional and defaults to off because some use cases only have energy flowing in a single direction.
     """
 
     _EP_CONFIG_ATTR = {
@@ -106,7 +107,7 @@ class MatSeePlusLateFlowMitigation:
 class MatSeePlusElectricalMeasurement(
     MatSeePlusLateFlowMitigation, TuyaLocalCluster, TuyaZBElectricalMeasurement
 ):
-    """ElectricalMeasurement cluster for MatSeePlus energy meter devices."""
+    """ElectricalMeasurement cluster for MatSeePlus CT energy meter channels."""
 
     _CONSTANT_ATTRIBUTES: dict[int, Any] = {
         **TuyaZBElectricalMeasurement._CONSTANT_ATTRIBUTES,
@@ -133,7 +134,7 @@ class MatSeePlusElectricalMeasurement(
 
 
 class MatSeePlusElectricalMeasurementTotal(MatSeePlusElectricalMeasurement):
-    """ElectricalMeasurement cluster for MatSeePlus energy meter devices."""
+    """ElectricalMeasurement cluster for MatSeePlus CT energy meter totals."""
 
     _VALID_ATTRIBUTES = {
         TuyaZBElectricalMeasurement.AttributeDefs.active_power.name,
@@ -202,68 +203,78 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
             value = -value
         return value
 
+    def _compute_signed_power(
+        self,
+        attr_name: str,
+        value: int | TuyaEnergyFlow,
+        power_attr: str,
+        energy_attr: str,
+        late_energy_flow: bool,
+    ):
+        """
+        Compute signed power based on energy configuration and DP reporting order.
+
+        The flow DP value the previous interval is reported prior to current power,
+        the device omits the flow DP in intervals with 0 power.
+        """
+        if late_energy_flow:
+            if attr_name == energy_attr:
+                return self._align_with_energy_flow(self.get(power_attr), value)
+            elif attr_name == power_attr:
+                return value if value == 0 else None
+        elif attr_name == power_attr:
+            return self._align_with_energy_flow(value, self.get(energy_attr))
+        return None
+
+    def _report_power_value(self, value: int, ep_id: int):
+        """Report the power value to the specified ElectricalMeasurement endpoint cluster."""
+        self.endpoint.device.endpoints[ep_id].electrical_measurement.update_attribute(
+            MatSeePlusElectricalMeasurement.AttributeDefs.active_power.name,
+            value,
+        )
+
     def update_attribute(self, attr_name: str, value):
         """Handle reports to Electrical Measurement power attributes after aligning with power flow."""
         super().update_attribute(attr_name, value)
+        config = self.endpoint.local_config
 
-        # Align unsigned CT A power value with energy direction
-        if self.endpoint.local_config.get(
-            self.endpoint.local_config.AttributeDefs.late_energy_flow_a.name
-        ):
-            if attr_name == self.ENERGY_FLOW_A:
-                self._power_signed_a = self._align_with_energy_flow(
-                    self.get(self.POWER_A), value
-                )
-                self.endpoint.electrical_measurement.update_attribute(
-                    MatSeePlusElectricalMeasurement.AttributeDefs.active_power.name,
-                    self._power_signed_a,
-                )
-        elif attr_name == self.POWER_A:
-            self._power_signed_a = self._align_with_energy_flow(
-                value, self.get(self.ENERGY_FLOW_A)
-            )
-            self.endpoint.electrical_measurement.update_attribute(
-                MatSeePlusElectricalMeasurement.AttributeDefs.active_power.name,
-                self._power_signed_a,
+        if attr_name in (self.POWER_A, self.ENERGY_FLOW_A):
+            # Compute the signed CT A power value
+            self._power_signed_a = self._compute_signed_power(
+                attr_name,
+                value,
+                power_attr=self.POWER_A,
+                energy_attr=self.ENERGY_FLOW_A,
+                late_energy_flow=config.get(
+                    config.AttributeDefs.late_energy_flow_a.name
+                ),
             )
 
-        # Align unsigned CT B power value with energy direction
-        if self.endpoint.local_config.get(
-            self.endpoint.local_config.AttributeDefs.late_energy_flow_b.name
-        ):
-            if attr_name == self.ENERGY_FLOW_B:
-                self._power_signed_b = self._align_with_energy_flow(
-                    self.get(self.POWER_B), value
-                )
-                self.endpoint.device.endpoints[
-                    ENDPOINT_ID_CT_B
-                ].electrical_measurement.update_attribute(
-                    MatSeePlusElectricalMeasurement.AttributeDefs.active_power.name,
-                    self._power_signed_b,
-                )
-        elif attr_name == self.POWER_B:
-            self._power_signed_b = self._align_with_energy_flow(
-                value, self.get(self.ENERGY_FLOW_B)
-            )
-            self.endpoint.device.endpoints[
-                ENDPOINT_ID_CT_B
-            ].electrical_measurement.update_attribute(
-                MatSeePlusElectricalMeasurement.AttributeDefs.active_power.name,
-                self._power_signed_b,
+            # Report the signed value to the CT A cluster
+            if self._power_signed_a is not None:
+                self._report_power_value(self._power_signed_a, ENDPOINT_ID_CT_A)
+
+        if attr_name in (self.POWER_B, self.ENERGY_FLOW_B):
+            # Compute the signed CT B power value
+            self._power_signed_b = self._compute_signed_power(
+                attr_name,
+                value,
+                power_attr=self.POWER_B,
+                energy_attr=self.ENERGY_FLOW_B,
+                late_energy_flow=config.get(
+                    config.AttributeDefs.late_energy_flow_b.name
+                ),
             )
 
-        # Calculate and update the Total (AB) power value
-        if (
-            attr_name in (self.POWER_B, self.ENERGY_FLOW_B)
-            and self._power_signed_a is not None
-            and self._power_signed_b is not None
-        ):
-            self.endpoint.device.endpoints[
-                ENDPOINT_ID_TOTAL
-            ].electrical_measurement.update_attribute(
-                MatSeePlusElectricalMeasurementTotal.AttributeDefs.active_power.name,
-                self._power_signed_a + self._power_signed_b,
-            )
+            # Report the signed value to the CT B cluster
+            if self._power_signed_b is not None:
+                self._report_power_value(self._power_signed_b, ENDPOINT_ID_CT_B)
+
+            # Calculate and report the Total (AB) power value
+            if self._power_signed_a is not None and self._power_signed_b is not None:
+                self._report_power_value(
+                    self._power_signed_a + self._power_signed_b, ENDPOINT_ID_TOTAL
+                )
 
 
 (
@@ -280,7 +291,6 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
     .adds(MatSeePlusElectricalMeasurement, endpoint_id=ENDPOINT_ID_TOTAL)
     .adds(MatSeePlusMetering)
     .adds(MatSeePlusMetering, endpoint_id=ENDPOINT_ID_CT_B)
-    .adds(MatSeePlusMetering, endpoint_id=ENDPOINT_ID_TOTAL)
     .adds(MatSeePlusLocalConfig)
     # Metering attributes
     .tuya_dp(
