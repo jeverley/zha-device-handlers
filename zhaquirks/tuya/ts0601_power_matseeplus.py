@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Final
 
-from zigpy.quirks.v2.homeassistant import EntityType, UnitOfTime, PERCENTAGE
+from zigpy.quirks.v2.homeassistant import PERCENTAGE, EntityType, UnitOfTime
 import zigpy.types as t
 from zigpy.zcl.clusters.homeautomation import MeasurementType
 from zigpy.zcl.foundation import BaseAttributeDefs, ZCLAttributeDef
+
 from zhaquirks import LocalDataCluster
 from zhaquirks.tuya import (
     TuyaLocalCluster,
@@ -30,8 +31,7 @@ class TuyaEnergyFlow(t.enum1):
 
 
 class MatSeePlusLocalConfig(LocalDataCluster):
-    """
-    Cluster for storing local configuration.
+    """Cluster for storing local configuration.
 
     Allows control over the delayed energy flow bug mitigation.
     """
@@ -57,57 +57,24 @@ class MatSeePlusLocalConfig(LocalDataCluster):
         )
 
 
-class MatSeePlusLateFlowMitigation:
-    """Cluster logic compensating for delayed PJ-1203A energy flow reporting.
+class MatSeePlusElectricalMeasurement(TuyaLocalCluster, TuyaZBElectricalMeasurement):
+    """ElectricalMeasurement cluster for MatSeePlus CT energy meter with flow delay mitigation.
 
     _TZE204_81yrt3lo (app_version: 74, hw_version: 1 and stack_version: 0) has a bug
     where the current energy flow values are incorrectly emitted during the next reporting interval.
     This means a change in direction result in incorrect power values.
 
+    The bug has remained unfixed for multiple years, with no provided firmware updates from the manufacturer.
     When enabled this mitigation holds non-power attribute values until the subsequent interval's attribute report.
     This ensures correct values, but introduces a delay in entity updates.
 
     This is optional and defaults to off because some use cases only have energy flowing in a single direction.
     """
 
-    _EP_CONFIG_ATTR = {
+    _EP_MITIGATION_CONFIG_ATTR: dict[int, str] = {
         ENDPOINT_ID_CT_A: MatSeePlusLocalConfig.AttributeDefs.late_energy_flow_a.name,
         ENDPOINT_ID_CT_B: MatSeePlusLocalConfig.AttributeDefs.late_energy_flow_b.name,
     }
-
-    _POWER_ATTRS = {
-        TuyaZBElectricalMeasurement.AttributeDefs.active_power.name,
-    }
-
-    def __init__(self, *args, **kwargs):
-        """Init."""
-        self._held_values: dict[str, Any] = {}
-        super().__init__(*args, **kwargs)
-
-    @property
-    def late_energy_flow(self) -> bool:
-        """Return the config value for the channel endpoint."""
-        config_attr = self._EP_CONFIG_ATTR.get(self.endpoint.endpoint_id, None)
-        if not config_attr:
-            return False
-        return self.endpoint.device.endpoints[1].local_config.get(config_attr)
-
-    def late_energy_flow_handler(self, attr_name: str, value: Any) -> Any:
-        """Hold non-power attribute values until the next update is received from the device."""
-        if not self.late_energy_flow or attr_name in self._POWER_ATTRS:
-            if attr_name in self._held_values:
-                self._held_values.remove(attr_name)
-            return value
-
-        held_value = self._held_values.get(attr_name, None)
-        self._held_values[attr_name] = value
-        return held_value
-
-
-class MatSeePlusElectricalMeasurement(
-    MatSeePlusLateFlowMitigation, TuyaLocalCluster, TuyaZBElectricalMeasurement
-):
-    """ElectricalMeasurement cluster for MatSeePlus CT energy meter channels."""
 
     _CONSTANT_ATTRIBUTES: dict[int, Any] = {
         **TuyaZBElectricalMeasurement._CONSTANT_ATTRIBUTES,
@@ -121,67 +88,74 @@ class MatSeePlusElectricalMeasurement(
         | MeasurementType.Phase_A_measurement,
     }
 
-    _VALID_ATTRIBUTES = {
-        TuyaZBElectricalMeasurement.AttributeDefs.active_power.name,
-        TuyaZBElectricalMeasurement.AttributeDefs.power_factor.name,
-        TuyaZBElectricalMeasurement.AttributeDefs.rms_current.name,
+    _VALID_ATTRIBUTES: set[int] = {
+        TuyaZBElectricalMeasurement.AttributeDefs.active_power.id,
+        TuyaZBElectricalMeasurement.AttributeDefs.power_factor.id,
+        TuyaZBElectricalMeasurement.AttributeDefs.rms_current.id,
     }
+
+    def __init__(self, *args, **kwargs):
+        """Init."""
+        self._held_values: dict[str, Any] = {}
+        super().__init__(*args, **kwargs)
+
+    @property
+    def _late_energy_flow(self) -> bool:
+        """Return the config value for the channel endpoint."""
+        config_attr = self._EP_MITIGATION_CONFIG_ATTR.get(self.endpoint.endpoint_id)
+        if not config_attr:
+            return False
+        return bool(self.endpoint.device.endpoints[1].local_config.get(config_attr))
+
+    def _late_energy_flow_handler(self, attr_name: str, value: Any) -> Any:
+        """Hold non-power attribute values until the next update is received from the device."""
+        if attr_name == TuyaZBElectricalMeasurement.AttributeDefs.active_power.name:
+            return value
+
+        held_value = self._held_values.pop(attr_name, None)
+        if not self._late_energy_flow:
+            return value
+
+        self._held_values[attr_name] = value
+        return held_value
 
     def update_attribute(self, attr_name: str, value):
         """Update the cluster attribute."""
-        value = self.late_energy_flow_handler(attr_name, value)
+        value = self._late_energy_flow_handler(attr_name, value)
         super().update_attribute(attr_name, value)
 
 
 class MatSeePlusElectricalMeasurementTotal(MatSeePlusElectricalMeasurement):
-    """ElectricalMeasurement cluster for MatSeePlus CT energy meter totals."""
+    """ElectricalMeasurement cluster for MatSeePlus CT energy meter total and common measurements."""
 
-    _VALID_ATTRIBUTES = {
-        TuyaZBElectricalMeasurement.AttributeDefs.active_power.name,
-        TuyaZBElectricalMeasurement.AttributeDefs.ac_frequency.name,
-        TuyaZBElectricalMeasurement.AttributeDefs.rms_voltage.name,
+    _VALID_ATTRIBUTES: set[int] = {
+        TuyaZBElectricalMeasurement.AttributeDefs.active_power.id,
+        TuyaZBElectricalMeasurement.AttributeDefs.ac_frequency.id,
+        TuyaZBElectricalMeasurement.AttributeDefs.rms_voltage.id,
     }
 
 
 class MatSeePlusMetering(TuyaLocalCluster, TuyaZBMeteringClusterWithUnit):
-    """Metering cluster for MatSeePlus energy meter devices."""
+    """Metering cluster for MatSeePlus CT energy meter."""
 
-    _CONSTANT_ATTRIBUTES: dict[int, Any] = {
-        **TuyaZBMeteringClusterWithUnit._CONSTANT_ATTRIBUTES,
-        TuyaZBMeteringClusterWithUnit.AttributeDefs.status.id: 0x00,
-        TuyaZBMeteringClusterWithUnit.AttributeDefs.multiplier.id: 1,
-        TuyaZBMeteringClusterWithUnit.AttributeDefs.divisor.id: 10000,  # preserves 1 decimal place after power conversion from kW to W
-        TuyaZBMeteringClusterWithUnit.AttributeDefs.summation_formatting.id: (
-            True << 6
-        )  # no leading zeros
-        | (7 << 3)  # 7 whole digits
-        | 2,  # 2 decimal places
-        TuyaZBMeteringClusterWithUnit.AttributeDefs.demand_formatting.id: (
-            True << 6
-        )  # no leading zeros
-        | (7 << 3)  # 7 whole digits
-        | 1,  # 1 decimal places
-    }
-
-    _VALID_ATTRIBUTES = {
-        TuyaZBMeteringClusterWithUnit.AttributeDefs.current_summ_delivered.name,
-        TuyaZBMeteringClusterWithUnit.AttributeDefs.current_summ_received.name,
+    _VALID_ATTRIBUTES: set[int] = {
+        TuyaZBMeteringClusterWithUnit.AttributeDefs.current_summ_delivered.id,
+        TuyaZBMeteringClusterWithUnit.AttributeDefs.current_summ_received.id,
     }
 
 
 class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
-    """
-    Handle MatSeePlus power datapoint logic, addressing known firmware issues.
+    """Handle MatSeePlus power datapoint logic, addressing known firmware issues.
 
     - Sign the received power DP values using the energy flow DP value.
     - Delay power reporting to ElectricalMeasurement clusters if the 'late_energy_flow' option is enabled.
     - Recalculate the AB total power because the reported value on DP 115 is inaccurate due to the flow delay bug.
     """
 
-    ENERGY_FLOW_A = "energy_flow_a"
-    ENERGY_FLOW_B = "energy_flow_b"
-    POWER_A = "power_a"
-    POWER_B = "power_b"
+    ENERGY_FLOW_A: Final = "energy_flow_a"
+    ENERGY_FLOW_B: Final = "energy_flow_b"
+    POWER_A: Final = "power_a"
+    POWER_B: Final = "power_b"
 
     def __init__(self, *args, **kwargs):
         """Init."""
@@ -190,10 +164,10 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
         super().__init__(*args, **kwargs)
 
     @staticmethod
-    def _align_with_energy_flow(
-        value: int | None, direction: TuyaEnergyFlow
+    def _align_value_with_energy_flow(
+        value: int | None, direction: TuyaEnergyFlow | None
     ) -> int | None:
-        """Align the input value with specified energy direction."""
+        """Align the input value with specified energy flow direction."""
         if value and (
             direction == TuyaEnergyFlow.Reverse
             and value > 0
@@ -208,27 +182,28 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
         attr_name: str,
         value: int | TuyaEnergyFlow,
         power_attr: str,
-        energy_attr: str,
+        energy_flow_attr: str,
         late_energy_flow: bool,
-    ):
-        """
-        Compute signed power based on energy configuration and DP reporting order.
+    ) -> int | None:
+        """Compute signed power based on energy configuration and DP reporting order.
 
         The flow DP value the previous interval is reported prior to current power,
         the device omits the flow DP in intervals with 0 power.
         """
         if late_energy_flow:
-            if attr_name == energy_attr:
-                return self._align_with_energy_flow(self.get(power_attr), value)
+            if attr_name == energy_flow_attr:
+                return self._align_value_with_energy_flow(self.get(power_attr), value)
             elif attr_name == power_attr:
                 return value if value == 0 else None
         elif attr_name == power_attr:
-            return self._align_with_energy_flow(value, self.get(energy_attr))
+            return self._align_value_with_energy_flow(value, self.get(energy_flow_attr))
         return None
 
-    def _report_power_value(self, value: int, ep_id: int):
+    def _report_power_value(self, value: int, endpoint_id: int):
         """Report the power value to the specified ElectricalMeasurement endpoint cluster."""
-        self.endpoint.device.endpoints[ep_id].electrical_measurement.update_attribute(
+        self.endpoint.device.endpoints[
+            endpoint_id
+        ].electrical_measurement.update_attribute(
             MatSeePlusElectricalMeasurement.AttributeDefs.active_power.name,
             value,
         )
@@ -244,7 +219,7 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
                 attr_name,
                 value,
                 power_attr=self.POWER_A,
-                energy_attr=self.ENERGY_FLOW_A,
+                energy_flow_attr=self.ENERGY_FLOW_A,
                 late_energy_flow=config.get(
                     config.AttributeDefs.late_energy_flow_a.name
                 ),
@@ -255,13 +230,13 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
                 self._power_signed_a = power_signed_a
                 self._report_power_value(self._power_signed_a, ENDPOINT_ID_CT_A)
 
-        if attr_name in (self.POWER_B, self.ENERGY_FLOW_B):
+        elif attr_name in (self.POWER_B, self.ENERGY_FLOW_B):
             # Compute the signed CT B power value
             power_signed_b = self._compute_signed_power(
                 attr_name,
                 value,
                 power_attr=self.POWER_B,
-                energy_attr=self.ENERGY_FLOW_B,
+                energy_flow_attr=self.ENERGY_FLOW_B,
                 late_energy_flow=config.get(
                     config.AttributeDefs.late_energy_flow_b.name
                 ),
@@ -286,9 +261,7 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
     .tuya_enchantment()
     .adds_endpoint(ENDPOINT_ID_CT_B)
     .adds_endpoint(ENDPOINT_ID_TOTAL)
-    .adds(
-        MatSeePlusElectricalMeasurement,
-    )
+    .adds(MatSeePlusElectricalMeasurement)
     .adds(MatSeePlusElectricalMeasurement, endpoint_id=ENDPOINT_ID_CT_B)
     .adds(MatSeePlusElectricalMeasurement, endpoint_id=ENDPOINT_ID_TOTAL)
     .adds(MatSeePlusMetering)
@@ -299,29 +272,25 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
         dp_id=106,
         ep_attribute=MatSeePlusMetering.ep_attribute,
         attribute_name=MatSeePlusMetering.AttributeDefs.current_summ_delivered.name,
-        converter=lambda x: x * 100,
     )
     .tuya_dp(
         dp_id=108,
         ep_attribute=MatSeePlusMetering.ep_attribute,
         attribute_name=MatSeePlusMetering.AttributeDefs.current_summ_delivered.name,
-        converter=lambda x: x * 100,
         endpoint_id=ENDPOINT_ID_CT_B,
     )
     .tuya_dp(
         dp_id=107,
         ep_attribute=MatSeePlusMetering.ep_attribute,
         attribute_name=MatSeePlusMetering.AttributeDefs.current_summ_received.name,
-        converter=lambda x: x * 100,
     )
     .tuya_dp(
         dp_id=109,
         ep_attribute=MatSeePlusMetering.ep_attribute,
         attribute_name=MatSeePlusMetering.AttributeDefs.current_summ_received.name,
-        converter=lambda x: x * 100,
         endpoint_id=ENDPOINT_ID_CT_B,
     )
-    # Power attributes handled within Manufacturer cluster
+    # Power attributes handled within manufacturer cluster
     .tuya_dp_attribute(
         dp_id=101,
         attribute_name=TuyaMatSeePlusManufCluster.POWER_A,
@@ -344,7 +313,7 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
         type=TuyaEnergyFlow,
         converter=lambda x: TuyaEnergyFlow(x),
     )
-    # Electrical Measurement attributes
+    # Electrical measurement attributes
     .tuya_dp(
         dp_id=110,
         ep_attribute=MatSeePlusElectricalMeasurement.ep_attribute,
@@ -379,7 +348,7 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
         attribute_name=MatSeePlusElectricalMeasurementTotal.AttributeDefs.ac_frequency.name,
         endpoint_id=ENDPOINT_ID_TOTAL,
     )
-    # Local Configuration attributes
+    # Local configuration attributes
     .switch(
         MatSeePlusLocalConfig.AttributeDefs.late_energy_flow_a.name,
         MatSeePlusLocalConfig.cluster_id,
@@ -396,7 +365,7 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
         fallback_name="Mitigate flow B delay",
         initially_disabled=False,
     )
-    # Device Configuration attributes
+    # Device configuration attributes
     .tuya_number(
         dp_id=129,
         attribute_name="reporting_interval",
