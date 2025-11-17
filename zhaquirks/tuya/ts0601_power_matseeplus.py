@@ -23,8 +23,8 @@ ENDPOINT_ID_CT_B = 2
 ENDPOINT_ID_TOTAL = 3
 
 
-class TuyaEnergyFlow(t.enum1):
-    """Energy flow direction attribute type."""
+class TuyaEnergyFlow(t.enum8):
+    """Energy flow direction attribute values."""
 
     Forward = 0x0
     Reverse = 0x1
@@ -165,22 +165,23 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
 
     @staticmethod
     def _align_value_with_energy_flow(
-        value: int | None, direction: TuyaEnergyFlow | None
+        value: int | None, direction: int | None
     ) -> int | None:
-        """Align the input value with specified energy flow direction."""
-        if value and (
-            direction == TuyaEnergyFlow.Reverse
-            and value > 0
-            or direction == TuyaEnergyFlow.Forward
-            and value < 0
-        ):
+        """Align the input value with specified energy flow direction.
+
+        Args:
+            value: Power value to align
+            direction: Energy flow direction (0=Forward, 1=Reverse)
+
+        """
+        if value and value > 0 and direction == 1:
             value = -value
         return value
 
     def _compute_signed_power(
         self,
         attr_name: str,
-        value: int | TuyaEnergyFlow,
+        value: int,
         power_attr: str,
         energy_flow_attr: str,
         late_energy_flow: bool,
@@ -220,9 +221,7 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
                 value,
                 power_attr=self.POWER_A,
                 energy_flow_attr=self.ENERGY_FLOW_A,
-                late_energy_flow=config.get(
-                    config.AttributeDefs.late_energy_flow_a.name
-                ),
+                late_energy_flow=config.get(config.AttributeDefs.late_energy_flow_a.id),
             )
 
             # Report the signed value to the CT A cluster
@@ -237,9 +236,7 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
                 value,
                 power_attr=self.POWER_B,
                 energy_flow_attr=self.ENERGY_FLOW_B,
-                late_energy_flow=config.get(
-                    config.AttributeDefs.late_energy_flow_b.name
-                ),
+                late_energy_flow=config.get(config.AttributeDefs.late_energy_flow_b.id),
             )
 
             # Report the signed value to the CT B cluster
@@ -247,7 +244,7 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
                 self._power_signed_b = power_signed_b
                 self._report_power_value(self._power_signed_b, ENDPOINT_ID_CT_B)
 
-            # Calculate and report the Total (AB) power value
+            # Calculate and report the Total (AB) power value replacing DP 115
             if self._power_signed_a is not None and self._power_signed_b is not None:
                 self._report_power_value(
                     self._power_signed_a + self._power_signed_b, ENDPOINT_ID_TOTAL
@@ -305,13 +302,11 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
         dp_id=102,
         attribute_name=TuyaMatSeePlusManufCluster.ENERGY_FLOW_A,
         type=TuyaEnergyFlow,
-        converter=lambda x: TuyaEnergyFlow(x),
     )
     .tuya_dp_attribute(
         dp_id=104,
         attribute_name=TuyaMatSeePlusManufCluster.ENERGY_FLOW_B,
         type=TuyaEnergyFlow,
-        converter=lambda x: TuyaEnergyFlow(x),
     )
     # Electrical measurement attributes
     .tuya_dp(
