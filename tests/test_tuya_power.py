@@ -169,64 +169,89 @@ async def test_matseeplus_power_reporting(
 
 
 @pytest.mark.parametrize(
-    "msg,dp_id,expected_value",
+    "msg,endpoint_id,cluster_name,attr_name,expected_value",
     [
         # Metering DP messages
         (
             b"\x09\x1f\x02\x00\x04\x6a\x02\x00\x04\x00\x00\x30\x39",
-            106,
+            1,
+            "smartenergy_metering",
+            "current_summ_delivered",
             12345,
-        ),  # current_summ_delivered CT A
+        ),  # DP 106: current_summ_delivered CT A
         (
             b"\x09\x1f\x02\x00\x04\x6b\x02\x00\x04\x00\x00\x1a\x85",
-            107,
+            1,
+            "smartenergy_metering",
+            "current_summ_received",
             6789,
-        ),  # current_summ_received CT A
+        ),  # DP 107: current_summ_received CT A
         (
             b"\x09\x1f\x02\x00\x04\x6c\x02\x00\x04\x00\x00\xd4\x31",
-            108,
+            2,
+            "smartenergy_metering",
+            "current_summ_delivered",
             54321,
-        ),  # current_summ_delivered CT B
+        ),  # DP 108: current_summ_delivered CT B
         (
             b"\x09\x1f\x02\x00\x04\x6d\x02\x00\x04\x00\x00\x26\x94",
-            109,
+            2,
+            "smartenergy_metering",
+            "current_summ_received",
             9876,
-        ),  # current_summ_received CT B
+        ),  # DP 109: current_summ_received CT B
         # Electrical measurement DP messages
         (
             b"\x09\x1f\x02\x00\x04\x6e\x02\x00\x04\x00\x00\x03\xe8",
-            110,
+            1,
+            "electrical_measurement",
+            "power_factor",
             1000,
-        ),  # power_factor CT A
+        ),  # DP 110: power_factor CT A
         (
             b"\x09\x1f\x02\x00\x04\x71\x02\x00\x04\x00\x00\x03\xe8",
-            113,
+            1,
+            "electrical_measurement",
+            "rms_current",
             1000,
-        ),  # rms_current CT A
+        ),  # DP 113: rms_current CT A
         (
             b"\x09\x1f\x02\x00\x04\x72\x02\x00\x04\x00\x00\x07\xd0",
-            114,
+            2,
+            "electrical_measurement",
+            "rms_current",
             2000,
-        ),  # rms_current CT B
+        ),  # DP 114: rms_current CT B
         (
             b"\x09\x1f\x02\x00\x04\x70\x02\x00\x04\x00\x00\x08\xfc",
-            112,
+            3,
+            "electrical_measurement",
+            "rms_voltage",
             2300,
-        ),  # rms_voltage (total)
+        ),  # DP 112: rms_voltage (total)
         (
             b"\x09\x1f\x02\x00\x04\x6f\x02\x00\x04\x00\x00\x13\x88",
-            111,
+            3,
+            "electrical_measurement",
+            "ac_frequency",
             5000,
-        ),  # ac_frequency (total)
+        ),  # DP 111: ac_frequency (total)
         (
             b"\x09\x1f\x02\x00\x04\x79\x02\x00\x04\x00\x00\x03\xe8",
-            121,
+            2,
+            "electrical_measurement",
+            "power_factor",
             1000,
-        ),  # power_factor CT B
+        ),  # DP 121: power_factor CT B
     ],
 )
 async def test_matseeplus_electrical_and_metering(
-    zigpy_device_from_v2_quirk, msg, dp_id, expected_value
+    zigpy_device_from_v2_quirk,
+    msg,
+    endpoint_id,
+    cluster_name,
+    attr_name,
+    expected_value,
 ):
     """Test electrical measurement and metering attributes."""
     quirked = zigpy_device_from_v2_quirk("_TZE204_81yrt3lo", "TS0601")
@@ -237,21 +262,6 @@ async def test_matseeplus_electrical_and_metering(
     status = tuya_manufacturer.handle_get_data(data.data)
     assert status == foundation.Status.SUCCESS
 
-    # Map DP IDs to endpoints and attributes
-    dp_mapping = {
-        106: (1, "smartenergy_metering", "current_summ_delivered"),
-        107: (1, "smartenergy_metering", "current_summ_received"),
-        108: (2, "smartenergy_metering", "current_summ_delivered"),
-        109: (2, "smartenergy_metering", "current_summ_received"),
-        110: (1, "electrical_measurement", "power_factor"),
-        111: (3, "electrical_measurement", "ac_frequency"),
-        112: (3, "electrical_measurement", "rms_voltage"),
-        113: (1, "electrical_measurement", "rms_current"),
-        114: (2, "electrical_measurement", "rms_current"),
-        121: (2, "electrical_measurement", "power_factor"),
-    }
-
-    endpoint_id, cluster_name, attr_name = dp_mapping[dp_id]
     cluster = getattr(quirked.endpoints[endpoint_id], cluster_name)
     assert cluster.get(attr_name) == expected_value
 
@@ -263,11 +273,8 @@ async def test_matseeplus_late_flow_mitigation(zigpy_device_from_v2_quirk):
 
     # Enable late energy flow mitigation
     local_config = ep.local_config
-    local_config.update_attribute(
-        local_config.AttributeDefs.late_energy_flow_a.id, True
-    )
-    local_config.update_attribute(
-        local_config.AttributeDefs.late_energy_flow_b.id, True
+    await local_config.write_attributes(
+        {"late_energy_flow_a": True, "late_energy_flow_b": True}
     )
 
     tuya_manufacturer = ep.tuya_manufacturer
@@ -295,7 +302,7 @@ async def test_matseeplus_late_flow_mitigation(zigpy_device_from_v2_quirk):
     # Send flow messages - should release the held power values
     hdr, data = tuya_manufacturer.deserialize(
         b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
-    )  # DP 102: energy_flow_a = 0 (Forward) - using real device format
+    )  # DP 102: energy_flow_a = 0 (Forward)
     status = tuya_manufacturer.handle_get_data(data.data)
     assert status == foundation.Status.SUCCESS
 
@@ -304,7 +311,7 @@ async def test_matseeplus_late_flow_mitigation(zigpy_device_from_v2_quirk):
 
     hdr, data = tuya_manufacturer.deserialize(
         b"\x09\x0a\x02\x00\x80\x68\x04\x00\x01\x01"
-    )  # DP 104: energy_flow_b = 1 (Reverse) - using real device format
+    )  # DP 104: energy_flow_b = 1 (Reverse)
     status = tuya_manufacturer.handle_get_data(data.data)
     assert status == foundation.Status.SUCCESS
 
