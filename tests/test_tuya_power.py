@@ -91,10 +91,11 @@ async def test_ts0601_power_converter(zigpy_device_from_v2_quirk, msg, expected_
 
 
 @pytest.mark.parametrize(
-    "power_a_msg,flow_a_msg,power_b_msg,flow_b_msg,expected_power_a,expected_power_b,expected_total",
+    "manufacturer,power_a_msg,flow_a_msg,power_b_msg,flow_b_msg,expected_power_a,expected_power_b,expected_total",
     [
-        # Forward flow for both CTs
+        # Forward flow for both CTs - _TZE204 model
         (
+            "_TZE204_81yrt3lo",
             b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\xe8",  # DP 101: power_a = 1000
             b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00",  # DP 102: energy_flow_a = 0 (Forward)
             b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x01\xf4",  # DP 105: power_b = 500
@@ -103,8 +104,9 @@ async def test_ts0601_power_converter(zigpy_device_from_v2_quirk, msg, expected_
             500,  # Expected power B (positive for forward)
             1500,  # Expected total
         ),
-        # Reverse flow for both CTs
+        # Reverse flow for both CTs - _TZE204 model
         (
+            "_TZE204_81yrt3lo",
             b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\xe8",  # DP 101: power_a = 1000
             b"\x09\x0a\x02\x00\x80\x66\x04\x00\x01\x01",  # DP 102: energy_flow_a = 1 (Reverse)
             b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x01\xf4",  # DP 105: power_b = 500
@@ -113,8 +115,9 @@ async def test_ts0601_power_converter(zigpy_device_from_v2_quirk, msg, expected_
             -500,  # Expected power B (negative for reverse)
             -1500,  # Expected total
         ),
-        # Mixed flow directions
+        # Mixed flow directions - _TZE204 model
         (
+            "_TZE204_81yrt3lo",
             b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x04\x00",  # DP 101: power_a = 1024
             b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00",  # DP 102: energy_flow_a = 0 (Forward)
             b"\x09\x0a\x02\x00\x04\x69\x02\x00\x04\x00\x00\x02\x00",  # DP 105: power_b = 512
@@ -123,10 +126,22 @@ async def test_ts0601_power_converter(zigpy_device_from_v2_quirk, msg, expected_
             -512,  # Expected power B (negative for reverse)
             512,  # Expected total (1024 - 512)
         ),
+        # Forward flow for both CTs - _TZE284 model
+        (
+            "_TZE284_81yrt3lo",
+            b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\xe8",  # DP 101: power_a = 1000
+            b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00",  # DP 102: energy_flow_a = 0 (Forward)
+            b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x01\xf4",  # DP 105: power_b = 500
+            b"\x09\x11\x02\x00\x87\x68\x04\x00\x01\x00",  # DP 104: energy_flow_b = 0 (Forward)
+            1000,  # Expected power A (positive for forward)
+            500,  # Expected power B (positive for forward)
+            1500,  # Expected total
+        ),
     ],
 )
 async def test_matseeplus_power_reporting(
     zigpy_device_from_v2_quirk,
+    manufacturer,
     power_a_msg,
     flow_a_msg,
     power_b_msg,
@@ -135,28 +150,23 @@ async def test_matseeplus_power_reporting(
     expected_power_b,
     expected_total,
 ):
-    """Test power reporting using Tuya DP messages."""
-    quirked = zigpy_device_from_v2_quirk("_TZE204_81yrt3lo", "TS0601")
+    """Test power reporting using Tuya DP messages with default settings (late flow mitigation disabled)."""
+    quirked = zigpy_device_from_v2_quirk(manufacturer, "TS0601")
     ep = quirked.endpoints[1]
 
     tuya_manufacturer = ep.tuya_manufacturer
 
-    # Send messages in order: flow first, then power (so flow is available for alignment)
-    hdr, data = tuya_manufacturer.deserialize(flow_a_msg)
-    status = tuya_manufacturer.handle_get_data(data.data)
-    assert status == foundation.Status.SUCCESS
+    def send_dp_message(msg):
+        """Send and verify a DP message."""
+        hdr, data = tuya_manufacturer.deserialize(msg)
+        status = tuya_manufacturer.handle_get_data(data.data)
+        assert status == foundation.Status.SUCCESS
 
-    hdr, data = tuya_manufacturer.deserialize(power_a_msg)
-    status = tuya_manufacturer.handle_get_data(data.data)
-    assert status == foundation.Status.SUCCESS
-
-    hdr, data = tuya_manufacturer.deserialize(flow_b_msg)
-    status = tuya_manufacturer.handle_get_data(data.data)
-    assert status == foundation.Status.SUCCESS
-
-    hdr, data = tuya_manufacturer.deserialize(power_b_msg)
-    status = tuya_manufacturer.handle_get_data(data.data)
-    assert status == foundation.Status.SUCCESS
+    # Send messages in order: flow first, then power (flow is sent first for correct sign application)
+    send_dp_message(flow_a_msg)
+    send_dp_message(power_a_msg)
+    send_dp_message(flow_b_msg)
+    send_dp_message(power_b_msg)
 
     # Check power values on electrical measurement clusters
     ep1_electrical = quirked.endpoints[1].electrical_measurement
@@ -266,15 +276,26 @@ async def test_matseeplus_electrical_and_metering(
     assert cluster.get(attr_name) == expected_value
 
 
-async def test_matseeplus_late_flow_mitigation(zigpy_device_from_v2_quirk):
-    """Test late energy flow mitigation feature when enabled."""
+@pytest.mark.parametrize(
+    "late_flow_a,late_flow_b",
+    [
+        (False, False),  # Both disabled
+        (True, False),  # Only A enabled
+        (False, True),  # Only B enabled
+        (True, True),  # Both enabled
+    ],
+)
+async def test_matseeplus_late_flow_mitigation(
+    zigpy_device_from_v2_quirk, late_flow_a, late_flow_b
+):
+    """Test late energy flow mitigation feature in various configurations."""
     quirked = zigpy_device_from_v2_quirk("_TZE204_81yrt3lo", "TS0601")
     ep = quirked.endpoints[1]
 
-    # Enable late energy flow mitigation
+    # Configure late energy flow mitigation
     local_config = ep.local_config
     await local_config.write_attributes(
-        {"late_energy_flow_a": True, "late_energy_flow_b": True}
+        {"late_energy_flow_a": late_flow_a, "late_energy_flow_b": late_flow_b}
     )
 
     tuya_manufacturer = ep.tuya_manufacturer
@@ -282,69 +303,94 @@ async def test_matseeplus_late_flow_mitigation(zigpy_device_from_v2_quirk):
     ep2_electrical = quirked.endpoints[2].electrical_measurement
     ep3_electrical = quirked.endpoints[3].electrical_measurement
 
-    # Send power messages first - should be held until flow messages arrive
-    hdr, data = tuya_manufacturer.deserialize(
+    def send_dp_message(msg):
+        """Send and verify a DP message."""
+        hdr, data = tuya_manufacturer.deserialize(msg)
+        status = tuya_manufacturer.handle_get_data(data.data)
+        assert status == foundation.Status.SUCCESS
+
+    # Send power messages first
+    send_dp_message(
         b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x20"
     )  # DP 101: power_a = 800
-    status = tuya_manufacturer.handle_get_data(data.data)
-    assert status == foundation.Status.SUCCESS
 
-    hdr, data = tuya_manufacturer.deserialize(
+    send_dp_message(
         b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x02\x58"
     )  # DP 105: power_b = 600
-    status = tuya_manufacturer.handle_get_data(data.data)
-    assert status == foundation.Status.SUCCESS
 
-    # Power should be None (held) until flow messages arrive
-    assert ep1_electrical.get("active_power") is None
-    assert ep2_electrical.get("active_power") is None
+    # Check if power is held or available based on mitigation settings
+    if late_flow_a:
+        assert ep1_electrical.get("active_power") is None
+    else:
+        # Without mitigation, power should be available immediately (unsigned)
+        assert ep1_electrical.get("active_power") == 800
 
-    # Send flow messages - should release the held power values
-    hdr, data = tuya_manufacturer.deserialize(
+    if late_flow_b:
+        assert ep2_electrical.get("active_power") is None
+    else:
+        # Without mitigation, power should be available immediately (unsigned)
+        assert ep2_electrical.get("active_power") == 600
+
+    # Send flow messages
+    send_dp_message(
         b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
     )  # DP 102: energy_flow_a = 0 (Forward)
-    status = tuya_manufacturer.handle_get_data(data.data)
-    assert status == foundation.Status.SUCCESS
 
     # Power A should now be available (positive for forward flow)
     assert ep1_electrical.get("active_power") == 800
 
-    hdr, data = tuya_manufacturer.deserialize(
+    send_dp_message(
         b"\x09\x0a\x02\x00\x80\x68\x04\x00\x01\x01"
     )  # DP 104: energy_flow_b = 1 (Reverse)
-    status = tuya_manufacturer.handle_get_data(data.data)
-    assert status == foundation.Status.SUCCESS
 
-    # Power B should now be available (negative for reverse flow) and total calculated
-    assert ep2_electrical.get("active_power") == -600
-    assert ep3_electrical.get("active_power") == 200  # 800 + (-600)
+    # Check power B and total based on mitigation setting
+    if late_flow_b:
+        # With mitigation, power B is updated with correct sign (negative for reverse)
+        assert ep2_electrical.get("active_power") == -600
+        assert ep3_electrical.get("active_power") == 200  # 800 + (-600)
+    else:
+        # Without mitigation, power B was already reported as unsigned, flow doesn't update it
+        assert ep2_electrical.get("active_power") == 600
+        assert ep3_electrical.get("active_power") == 1400  # 800 + 600
 
-    # Test non-power attribute delay
-    hdr, data = tuya_manufacturer.deserialize(
-        b"\x09\x1f\x02\x00\x04\x71\x02\x00\x04\x00\x00\x03\xe8"
-    )  # DP 113: rms_current = 1000
-    status = tuya_manufacturer.handle_get_data(data.data)
-    assert status == foundation.Status.SUCCESS
+    if late_flow_a:
+        # Test non-power attribute delay for CT A
+        send_dp_message(
+            b"\x09\x1f\x02\x00\x04\x71\x02\x00\x04\x00\x00\x03\xe8"
+        )  # DP 113: rms_current = 1000
 
-    # Current should be held
-    assert ep1_electrical.get("rms_current") is None
+        # Current should be held
+        assert ep1_electrical.get("rms_current") is None
 
-    # Send another current message - should release the previous one
-    hdr, data = tuya_manufacturer.deserialize(
-        b"\x09\x1f\x02\x00\x04\x71\x02\x00\x04\x00\x00\x07\xd0"
-    )  # DP 113: rms_current = 2000
-    status = tuya_manufacturer.handle_get_data(data.data)
-    assert status == foundation.Status.SUCCESS
+        # Send another current message - should release the previous one
+        send_dp_message(
+            b"\x09\x1f\x02\x00\x04\x71\x02\x00\x04\x00\x00\x07\xd0"
+        )  # DP 113: rms_current = 2000
 
-    # Previous current (1000) should now be available
-    assert ep1_electrical.get("rms_current") == 1000
+        # Previous current (1000) should now be available
+        assert ep1_electrical.get("rms_current") == 1000
 
-    # Test zero power - should be reported immediately even in late flow mode
-    hdr, data = tuya_manufacturer.deserialize(
-        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x00\x00"
-    )  # DP 101: power_a = 0
-    status = tuya_manufacturer.handle_get_data(data.data)
-    assert status == foundation.Status.SUCCESS
+    if late_flow_a:
+        # Test zero power - should be reported immediately even in late flow mode
+        send_dp_message(
+            b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x00\x00"
+        )  # DP 101: power_a = 0
 
-    # Zero power should be immediately available
-    assert ep1_electrical.get("active_power") == 0
+        # Zero power should be immediately available
+        assert ep1_electrical.get("active_power") == 0
+
+        # Test non-zero power after zero - should be held again
+        send_dp_message(
+            b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x01\x90"
+        )  # DP 101: power_a = 400
+
+        # Power should be held (None) until next flow message
+        assert ep1_electrical.get("active_power") == 0  # Still showing previous zero
+
+        # Send flow message to release the held power
+        send_dp_message(
+            b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
+        )  # DP 102: energy_flow_a = 0 (Forward)
+
+        # Now the 400W should be available
+        assert ep1_electrical.get("active_power") == 400

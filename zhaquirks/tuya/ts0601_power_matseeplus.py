@@ -1,4 +1,4 @@
-"""Tuya MatSeePlus CT Energy Meter."""
+"""Tuya MatSeePlus 2 CT Bidirectional Energy Meter."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ class MatSeePlusLocalConfig(LocalDataCluster):
         )
 
 
-class MatSeePlusElectricalMeasurement(TuyaLocalCluster, TuyaZBElectricalMeasurement):
+class MatSeePlusElectricalMeasurement(TuyaZBElectricalMeasurement, TuyaLocalCluster):
     """ElectricalMeasurement cluster for MatSeePlus CT energy meter with flow delay mitigation.
 
     _TZE204_81yrt3lo (app_version: 74, hw_version: 1 and stack_version: 0) has a bug
@@ -71,6 +71,7 @@ class MatSeePlusElectricalMeasurement(TuyaLocalCluster, TuyaZBElectricalMeasurem
     This is optional and defaults to off because some use cases only have energy flowing in a single direction.
     """
 
+    # Maps endpoint IDs to their corresponding late energy flow configuration attribute names
     _EP_MITIGATION_CONFIG_ATTR: dict[int, str] = {
         ENDPOINT_ID_CT_A: MatSeePlusLocalConfig.AttributeDefs.late_energy_flow_a.name,
         ENDPOINT_ID_CT_B: MatSeePlusLocalConfig.AttributeDefs.late_energy_flow_b.name,
@@ -126,7 +127,7 @@ class MatSeePlusElectricalMeasurement(TuyaLocalCluster, TuyaZBElectricalMeasurem
 
 
 class MatSeePlusElectricalMeasurementTotal(MatSeePlusElectricalMeasurement):
-    """ElectricalMeasurement cluster for MatSeePlus CT energy meter total and common measurements."""
+    """ElectricalMeasurement cluster for MatSeePlus CT Energy Meter common measurements and total power."""
 
     _VALID_ATTRIBUTES: set[int] = {
         TuyaZBElectricalMeasurement.AttributeDefs.active_power.id,
@@ -135,7 +136,7 @@ class MatSeePlusElectricalMeasurementTotal(MatSeePlusElectricalMeasurement):
     }
 
 
-class MatSeePlusMetering(TuyaLocalCluster, TuyaZBMeteringClusterWithUnit):
+class MatSeePlusMetering(TuyaZBMeteringClusterWithUnit, TuyaLocalCluster):
     """Metering cluster for MatSeePlus CT energy meter."""
 
     _VALID_ATTRIBUTES: set[int] = {
@@ -147,8 +148,7 @@ class MatSeePlusMetering(TuyaLocalCluster, TuyaZBMeteringClusterWithUnit):
 class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
     """Handle MatSeePlus power datapoint logic, addressing known firmware issues.
 
-    - Sign the received power DP values using the energy flow DP value.
-    - Delay power reporting to ElectricalMeasurement clusters if the 'late_energy_flow' option is enabled.
+    - Sequence power DP value signing and reporting to Electrical Measurement clusters respective of reporting sequence and config.
     - Recalculate the AB total power because the reported value on DP 115 is inaccurate due to the flow delay bug.
     """
 
@@ -167,13 +167,7 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
     def _align_value_with_energy_flow(
         value: int | None, direction: int | None
     ) -> int | None:
-        """Align the input value with specified energy flow direction.
-
-        Args:
-            value: Power value to align
-            direction: Energy flow direction (0=Forward, 1=Reverse)
-
-        """
+        """Align the input value with specified energy flow direction."""
         if value and value > 0 and direction == 1:
             value = -value
         return value
@@ -252,7 +246,7 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
 
 
 (
-    ### MatSee Plus Tuya PJ-1203A 2 channel bidirectional energy meter with Zigbee Green Power.
+    ### MatSee Plus Tuya PJ-1203A 2 CT Bidirectional Energy Meter
     TuyaQuirkBuilder("_TZE204_81yrt3lo", "TS0601")
     .also_applies_to("_TZE284_81yrt3lo", "TS0601")
     .tuya_enchantment()
@@ -439,7 +433,7 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
         step=0.1,
         multiplier=0.1,
         translation_key="calibrate_summ_received_a",
-        fallback_name="Calibrate summation received B",
+        fallback_name="Calibrate summation received A",
         entity_type=EntityType.CONFIG,
         initially_disabled=True,
     )
