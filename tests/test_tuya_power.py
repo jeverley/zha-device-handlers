@@ -371,23 +371,23 @@ async def test_matseeplus_late_flow_mitigation(
         assert ep1_electrical.get("rms_current") == 1000
 
     if late_flow_a:
-        # Test zero power - should be reported immediately even in late flow mode
+        # Test zero power - should be held like other power values
         send_dp_message(
             b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x00\x00"
         )  # DP 101: power_a = 0
 
-        # Zero power should be immediately available
-        assert ep1_electrical.get("active_power") == 0
+        # Zero power should be held (not available yet)
+        assert ep1_electrical.get("active_power") == 800  # Still showing previous
 
-        # Test non-zero power after zero - should be held again
+        # Test non-zero power after zero - should release the zero
         send_dp_message(
             b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x01\x90"
         )  # DP 101: power_a = 400
 
-        # Power should be held (None) until next flow message
-        assert ep1_electrical.get("active_power") == 0  # Still showing previous zero
+        # Should release the previous zero power
+        assert ep1_electrical.get("active_power") == 0
 
-        # Send flow message to release the held power
+        # Send flow message to release the held 400 power
         send_dp_message(
             b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
         )  # DP 102: energy_flow_a = 0 (Forward)
