@@ -196,7 +196,7 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
     def _process_power_and_energy_flow(
         self,
         attr_name: str,
-        value: Any,
+        value: int | TuyaEnergyFlow,
         power_attr: str,
         energy_flow_attr: str,
         late_energy_flow: bool,
@@ -219,9 +219,7 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
         deferred = False
 
         # Compute signed power based on configuration and reporting order
-        if value is None:
-            pass
-        elif late_energy_flow:
+        if late_energy_flow:
             if attr_name == energy_flow_attr:
                 # value is TuyaEnergyFlow when attr_name is energy_flow_attr
                 power = self._align_value_with_energy_flow(self.get(power_attr), value)
@@ -250,10 +248,15 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
         super().update_attribute(attr_name, value)
 
         if attr_name in (self.POWER_A, self.ENERGY_FLOW_A):
-            # Release deferred value before processing new update
+            # Release deferred values from the previous interval before processing updates
+            deferred = self._deferred_a or self._deferred_b
             if self._deferred_a and self._power_a is not None:
                 self._deferred_a = False
                 self._report_power_value(self._power_a, ENDPOINT_ID_CT_A)
+            if self._deferred_b and self._power_b is not None:
+                self._deferred_b = False
+                self._report_power_value(self._power_b, ENDPOINT_ID_CT_B)
+            if deferred:
                 self._maybe_report_total_power()
 
             # Process new values for power A and energy flow A
@@ -270,12 +273,6 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
             )
 
         elif attr_name in (self.POWER_B, self.ENERGY_FLOW_B):
-            # Release deferred value before processing new update
-            if self._deferred_b and self._power_b is not None:
-                self._deferred_b = False
-                self._report_power_value(self._power_b, ENDPOINT_ID_CT_B)
-                self._maybe_report_total_power()
-
             # Process new values for power B and energy flow B
             self._power_b, self._deferred_b = self._process_power_and_energy_flow(
                 attr_name,

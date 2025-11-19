@@ -394,3 +394,60 @@ async def test_matseeplus_late_flow_mitigation(
 
         # Now the 400W should be available
         assert ep1_electrical.get("active_power") == 400
+
+    if late_flow_b:
+        # Test zero power deferred for channel B
+        send_dp_message(
+            b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x00\x00"
+        )  # DP 105: power_b = 0
+
+        # Zero power should be held (not available yet)
+        assert ep2_electrical.get("active_power") == -600  # Still showing previous
+
+        # Send a Channel A update to trigger new interval and release deferred B
+        send_dp_message(
+            b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x84"
+        )  # DP 101: power_a = 900
+
+        # Deferred zero for B should now be released, total calculated with released B
+        assert ep2_electrical.get("active_power") == 0
+        if late_flow_a:
+            # Previous A (400) + released B (0)
+            assert ep3_electrical.get("active_power") == 400
+        else:
+            # Previous A (800) + released B (0) - new A not yet in total
+            assert ep3_electrical.get("active_power") == 800
+
+        # New A value should be held if late_flow_a is enabled, otherwise reported immediately
+        if late_flow_a:
+            assert ep1_electrical.get("active_power") == 400  # Still previous
+        else:
+            assert ep1_electrical.get("active_power") == 900  # New value available
+
+        # Send a Channel B update to complete the interval and calculate total with new A
+        send_dp_message(
+            b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x03\x84"
+        )  # DP 105: power_b = 900
+
+        # If late_flow_b is enabled, power B is deferred until flow DP arrives
+        if late_flow_b:
+            # Power B is held, total not yet updated
+            assert (
+                ep2_electrical.get("active_power") == 0
+            )  # Still previous released value
+            # Total still at previous value
+            if late_flow_a:
+                assert ep3_electrical.get("active_power") == 400  # 400 + 0
+            else:
+                assert ep3_electrical.get("active_power") == 900  # 900 + 0
+
+            # Send flow DP to release power_b
+            send_dp_message(
+                b"\x09\x0a\x02\x00\x80\x68\x04\x00\x01\x01"
+            )  # DP 104: energy_flow_b = 1 (Reverse)
+
+        # Total should now include the current A and B values
+        if late_flow_a:
+            assert ep3_electrical.get("active_power") == -500  # 400 + (-900)
+        else:
+            assert ep3_electrical.get("active_power") == 0  # 900 + (-900)
