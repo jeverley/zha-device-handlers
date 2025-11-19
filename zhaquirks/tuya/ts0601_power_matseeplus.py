@@ -159,51 +159,20 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
 
     def __init__(self, *args, **kwargs):
         """Init."""
-        self._power_signed_a: int | None = None
-        self._power_signed_b: int | None = None
+        self._power_a: int | None = None
+        self._power_b: int | None = None
         self._deferred_a: bool = False
         self._deferred_b: bool = False
         super().__init__(*args, **kwargs)
 
     @staticmethod
     def _align_value_with_energy_flow(
-        value: int | None, direction: TuyaEnergyFlow | None
+        value: int, direction: TuyaEnergyFlow
     ) -> int | None:
         """Align the input value with specified energy flow direction."""
         if value and value > 0 and direction == 1:
             value = -value
         return value
-
-    def _compute_signed_power(
-        self,
-        attr_name: str,
-        value: int,
-        power_attr: str,
-        energy_flow_attr: str,
-        late_energy_flow: bool,
-    ) -> tuple[int | None, bool]:
-        """Compute signed power based on energy configuration and DP reporting order.
-
-        The flow DP value the previous interval is reported prior to current power,
-        the device omits the flow DP in intervals with 0 power.
-        """
-        signed_value = None
-        deferred = False
-
-        if late_energy_flow:
-            if attr_name == energy_flow_attr:
-                signed_value = self._align_value_with_energy_flow(
-                    self.get(power_attr), value
-                )
-            elif attr_name == power_attr and value == 0:
-                # Hold zero power until next interval because the flow DP is not reported with 0 power
-                signed_value = 0
-                deferred = True
-        elif attr_name == power_attr:
-            signed_value = self._align_value_with_energy_flow(
-                value, self.get(energy_flow_attr)
-            )
-        return signed_value, deferred
 
     def _report_power_value(self, value: int, endpoint_id: int):
         """Report the power value to the specified ElectricalMeasurement endpoint cluster."""
@@ -219,69 +188,76 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
         if (
             not self._deferred_a
             and not self._deferred_b
-            and self._power_signed_a is not None
-            and self._power_signed_b is not None
-        ):  # Normal case: both channels ready
-            self._report_power_value(
-                self._power_signed_a + self._power_signed_b, ENDPOINT_ID_TOTAL
-            )
-        elif (
-            not self._deferred_a
-            and self._power_signed_a is not None
-            and self._deferred_b
-            and self._power_signed_b == 0
-        ):  # Special case: B is deferred with zero power
-            self._report_power_value(self._power_signed_a, ENDPOINT_ID_TOTAL)
+            and self._power_a is not None
+            and self._power_b is not None
+        ):
+            self._report_power_value(self._power_a + self._power_b, ENDPOINT_ID_TOTAL)
 
     def _process_power_and_energy_flow(
         self,
         attr_name: str,
-        value: int,
+        value: Any,
         power_attr: str,
         energy_flow_attr: str,
         late_energy_flow: bool,
-        endpoint_id: int,
-        deferred_flag_name: str,
-        stored_power_name: str,
-    ):
-        """Process power and flow updates for a single channel."""
-        # Get current deferred state and stored power
-        is_deferred = getattr(self, deferred_flag_name)
-        stored_power = getattr(self, stored_power_name)
+        report_endpoint_id: int,
+        stored_power: int | None,
+    ) -> tuple[int | None, bool]:
+        """Process power and energy flow DP updates.
 
-        # Release previously deferred value
-        if is_deferred and stored_power is not None:
-            self._report_power_value(stored_power, endpoint_id)
-            setattr(self, deferred_flag_name, False)
-            # Check if total can be reported after releasing deferred value
-            self._maybe_report_total_power()
+        Computes signed power based on DP reporting order and user configuration.
 
-        # Compute the new signed power value
-        power_signed, deferred = self._compute_signed_power(
-            attr_name,
-            value,
-            power_attr=power_attr,
-            energy_flow_attr=energy_flow_attr,
-            late_energy_flow=late_energy_flow,
-        )
+        If late_energy_flow == True, then the flow DP value of the previous interval
+        is reported prior to current power, therefore we must use the stored power value.
 
-        # Store signed value and deferred state
-        if power_signed is not None:
-            setattr(self, stored_power_name, power_signed)
-        setattr(self, deferred_flag_name, deferred)
+        The device omits the energy flow DP in intervals with 0 power, so we must defer reporting
+        of 0 power until the next interval to ensure consistent timing of attribute updates.
+
+        Returns the current signed power and deferred report flag.
+        """
+        power = None
+        deferred = False
+
+        # Compute signed power based on configuration and reporting order
+        if value is None:
+            pass
+        elif late_energy_flow:
+            if attr_name == energy_flow_attr:
+                # value is TuyaEnergyFlow when attr_name is energy_flow_attr
+                power = self._align_value_with_energy_flow(self.get(power_attr), value)
+            elif attr_name == power_attr and value == 0:
+                # Hold zero power until next interval because the flow DP is not reported with 0 power
+                power = 0
+                deferred = True
+        elif attr_name == power_attr:
+            # value is int when attr_name is power_attr
+            power = self._align_value_with_energy_flow(
+                value, self.get(energy_flow_attr)
+            )
+
+        # Update stored power if we have a new value, otherwise keep existing
+        if power is not None:
+            stored_power = power
 
         # Report the signed value to the cluster (unless deferred)
-        if not deferred and power_signed is not None:
-            self._report_power_value(power_signed, endpoint_id)
-            # Check if total can be reported using the new value
-            self._maybe_report_total_power()
+        if not deferred and power is not None:
+            self._report_power_value(power, report_endpoint_id)
+
+        return stored_power, deferred
 
     def update_attribute(self, attr_name: str, value):
         """Handle reports to Electrical Measurement power attributes after aligning with energy flow."""
         super().update_attribute(attr_name, value)
 
         if attr_name in (self.POWER_A, self.ENERGY_FLOW_A):
-            self._process_power_and_energy_flow(
+            # Release deferred value before processing new update
+            if self._deferred_a and self._power_a is not None:
+                self._deferred_a = False
+                self._report_power_value(self._power_a, ENDPOINT_ID_CT_A)
+                self._maybe_report_total_power()
+
+            # Process new values for power A and energy flow A
+            self._power_a, self._deferred_a = self._process_power_and_energy_flow(
                 attr_name,
                 value,
                 power_attr=self.POWER_A,
@@ -289,13 +265,19 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
                 late_energy_flow=self.endpoint.local_config.get(
                     MatSeePlusLocalConfig.AttributeDefs.late_energy_flow_a.name
                 ),
-                endpoint_id=ENDPOINT_ID_CT_A,
-                deferred_flag_name="_deferred_a",
-                stored_power_name="_power_signed_a",
+                report_endpoint_id=ENDPOINT_ID_CT_A,
+                stored_power=self._power_a,
             )
 
         elif attr_name in (self.POWER_B, self.ENERGY_FLOW_B):
-            self._process_power_and_energy_flow(
+            # Release deferred value before processing new update
+            if self._deferred_b and self._power_b is not None:
+                self._deferred_b = False
+                self._report_power_value(self._power_b, ENDPOINT_ID_CT_B)
+                self._maybe_report_total_power()
+
+            # Process new values for power B and energy flow B
+            self._power_b, self._deferred_b = self._process_power_and_energy_flow(
                 attr_name,
                 value,
                 power_attr=self.POWER_B,
@@ -303,10 +285,10 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
                 late_energy_flow=self.endpoint.local_config.get(
                     MatSeePlusLocalConfig.AttributeDefs.late_energy_flow_b.name
                 ),
-                endpoint_id=ENDPOINT_ID_CT_B,
-                deferred_flag_name="_deferred_b",
-                stored_power_name="_power_signed_b",
+                report_endpoint_id=ENDPOINT_ID_CT_B,
+                stored_power=self._power_b,
             )
+            self._maybe_report_total_power()
 
 
 (
