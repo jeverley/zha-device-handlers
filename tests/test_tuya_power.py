@@ -288,11 +288,11 @@ async def test_matseeplus_electrical_and_metering(
 async def test_matseeplus_late_flow_mitigation(
     zigpy_device_from_v2_quirk, late_flow_a, late_flow_b
 ):
-    """Test late energy flow mitigation feature in various configurations."""
+    """Test delayed energy flow bug mitigation."""
     quirked = zigpy_device_from_v2_quirk("_TZE204_81yrt3lo", "TS0601")
     ep = quirked.endpoints[1]
 
-    # Configure late energy flow mitigation
+    # Set mitigation settings
     local_config = ep.local_config
     await local_config.write_attributes(
         {"late_energy_flow_a": late_flow_a, "late_energy_flow_b": late_flow_b}
@@ -409,14 +409,14 @@ async def test_matseeplus_late_flow_mitigation(
             b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x84"
         )  # DP 101: power_a = 900
 
-        # Deferred zero for B should now be released, total calculated with released B
+        # Deferred zero for B should now be released, total calculated with released B and new A
         assert ep2_electrical.get("active_power") == 0
         if late_flow_a:
             # Previous A (400) + released B (0)
             assert ep3_electrical.get("active_power") == 400
         else:
-            # Previous A (800) + released B (0) - new A not yet in total
-            assert ep3_electrical.get("active_power") == 800
+            # New A (900) + released B (0)
+            assert ep3_electrical.get("active_power") == 900
 
         # New A value should be held if late_flow_a is enabled, otherwise reported immediately
         if late_flow_a:

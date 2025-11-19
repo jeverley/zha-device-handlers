@@ -249,15 +249,13 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
 
         if attr_name in (self.POWER_A, self.ENERGY_FLOW_A):
             # Release deferred values from the previous interval before processing updates
-            deferred = self._deferred_a or self._deferred_b
+            deferred_b = self._deferred_b
             if self._deferred_a and self._power_a is not None:
                 self._deferred_a = False
                 self._report_power_value(self._power_a, ENDPOINT_ID_CT_A)
             if self._deferred_b and self._power_b is not None:
                 self._deferred_b = False
                 self._report_power_value(self._power_b, ENDPOINT_ID_CT_B)
-            if deferred:
-                self._maybe_report_total_power()
 
             # Process new values for power A and energy flow A
             self._power_a, self._deferred_a = self._process_power_and_energy_flow(
@@ -271,6 +269,10 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
                 report_endpoint_id=ENDPOINT_ID_CT_A,
                 stored_power=self._power_a,
             )
+
+            # Report total if a deferred B value was released
+            if deferred_b:
+                self._maybe_report_total_power()
 
         elif attr_name in (self.POWER_B, self.ENERGY_FLOW_B):
             # Process new values for power B and energy flow B
