@@ -285,10 +285,10 @@ async def test_matseeplus_electrical_and_metering(
         (True, True),  # Both enabled
     ],
 )
-async def test_matseeplus_late_flow_mitigation(
+async def test_matseeplus_late_flow_power_reporting(
     zigpy_device_from_v2_quirk, late_flow_a, late_flow_b
 ):
-    """Test delayed energy flow bug mitigation."""
+    """Test basic power reporting with and without late flow mitigation."""
     quirked = zigpy_device_from_v2_quirk("_TZE204_81yrt3lo", "TS0601")
     ep = quirked.endpoints[1]
 
@@ -322,13 +322,13 @@ async def test_matseeplus_late_flow_mitigation(
     if late_flow_a:
         assert ep1_electrical.get("active_power") is None
     else:
-        # Without mitigation, power should be available immediately (unsigned)
+        # Without mitigation, power is available immediately (unsigned)
         assert ep1_electrical.get("active_power") == 800
 
     if late_flow_b:
         assert ep2_electrical.get("active_power") is None
     else:
-        # Without mitigation, power should be available immediately (unsigned)
+        # Without mitigation, power is available immediately (unsigned)
         assert ep2_electrical.get("active_power") == 600
 
     # Send flow messages
@@ -336,7 +336,7 @@ async def test_matseeplus_late_flow_mitigation(
         b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
     )  # DP 102: energy_flow_a = 0 (Forward)
 
-    # Power A should now be available (positive for forward flow)
+    # Power A is now available (positive for forward flow)
     assert ep1_electrical.get("active_power") == 800
 
     send_dp_message(
@@ -347,107 +347,312 @@ async def test_matseeplus_late_flow_mitigation(
     if late_flow_b:
         # With mitigation, power B is updated with correct sign (negative for reverse)
         assert ep2_electrical.get("active_power") == -600
-        assert ep3_electrical.get("active_power") == 200  # 800 + (-600)
+        if late_flow_a:
+            # When both mitigations enabled, total calculated when flow A processes
+            assert ep3_electrical.get("active_power") == 200  # 800 + (-600)
+        else:
+            # When only B mitigation enabled, total not calculated (B branch doesn't call it)
+            assert ep3_electrical.get("active_power") is None
     else:
         # Without mitigation, power B was already reported as unsigned, flow doesn't update it
         assert ep2_electrical.get("active_power") == 600
         assert ep3_electrical.get("active_power") == 1400  # 800 + 600
 
-    if late_flow_a:
-        # Test non-power attribute delay for CT A
-        send_dp_message(
-            b"\x09\x1f\x02\x00\x04\x71\x02\x00\x04\x00\x00\x03\xe8"
-        )  # DP 113: rms_current = 1000
 
-        # Current should be held
+@pytest.mark.parametrize("late_flow_enabled", [True, False])
+async def test_matseeplus_late_flow_non_power_attribute_delay(
+    zigpy_device_from_v2_quirk, late_flow_enabled
+):
+    """Test that non-power attributes are delayed when late flow mitigation is enabled."""
+    quirked = zigpy_device_from_v2_quirk("_TZE204_81yrt3lo", "TS0601")
+    ep = quirked.endpoints[1]
+
+    # Set mitigation settings
+    local_config = ep.local_config
+    await local_config.write_attributes(
+        {"late_energy_flow_a": late_flow_enabled, "late_energy_flow_b": False}
+    )
+
+    tuya_manufacturer = ep.tuya_manufacturer
+    ep1_electrical = quirked.endpoints[1].electrical_measurement
+
+    def send_dp_message(msg):
+        """Send and verify a DP message."""
+        hdr, data = tuya_manufacturer.deserialize(msg)
+        status = tuya_manufacturer.handle_get_data(data.data)
+        assert status == foundation.Status.SUCCESS
+
+    # Send initial power and flow to establish baseline
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x20"
+    )  # DP 101: power_a = 800
+    send_dp_message(
+        b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
+    )  # DP 102: energy_flow_a = 0 (Forward)
+
+    # Send current measurement
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x71\x02\x00\x04\x00\x00\x03\xe8"
+    )  # DP 113: rms_current = 1000
+
+    if late_flow_enabled:
+        # Current is held
         assert ep1_electrical.get("rms_current") is None
 
-        # Send another current message - should release the previous one
+        # Send another current message - releases the previous one
         send_dp_message(
             b"\x09\x1f\x02\x00\x04\x71\x02\x00\x04\x00\x00\x07\xd0"
         )  # DP 113: rms_current = 2000
 
-        # Previous current (1000) should now be available
+        # Previous current (1000) is now available
+        assert ep1_electrical.get("rms_current") == 1000
+    else:
+        # Without mitigation, current is available immediately
         assert ep1_electrical.get("rms_current") == 1000
 
+
+@pytest.mark.parametrize(
+    "late_flow_a,late_flow_b",
+    [
+        (False, False),  # Both disabled
+        (True, False),  # Only A enabled
+        (False, True),  # Only B enabled
+        (True, True),  # Both enabled
+    ],
+)
+async def test_matseeplus_late_flow_zero_power_deferral(
+    zigpy_device_from_v2_quirk, late_flow_a, late_flow_b
+):
+    """Test zero power deferral and cross-channel release with all configuration combinations."""
+    quirked = zigpy_device_from_v2_quirk("_TZE204_81yrt3lo", "TS0601")
+    ep = quirked.endpoints[1]
+
+    # Set mitigation settings
+    local_config = ep.local_config
+    await local_config.write_attributes(
+        {"late_energy_flow_a": late_flow_a, "late_energy_flow_b": late_flow_b}
+    )
+
+    tuya_manufacturer = ep.tuya_manufacturer
+    ep1_electrical = quirked.endpoints[1].electrical_measurement
+    ep2_electrical = quirked.endpoints[2].electrical_measurement
+    ep3_electrical = quirked.endpoints[3].electrical_measurement
+
+    def send_dp_message(msg):
+        """Send and verify a DP message."""
+        hdr, data = tuya_manufacturer.deserialize(msg)
+        status = tuya_manufacturer.handle_get_data(data.data)
+        assert status == foundation.Status.SUCCESS
+
+    # Establish baseline with both channels
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x20"
+    )  # DP 101: power_a = 800
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x02\x58"
+    )  # DP 105: power_b = 600
+    send_dp_message(
+        b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
+    )  # DP 102: energy_flow_a = 0 (Forward)
+    send_dp_message(
+        b"\x09\x0a\x02\x00\x80\x68\x04\x00\x01\x01"
+    )  # DP 104: energy_flow_b = 1 (Reverse)
+
+    assert ep1_electrical.get("active_power") == 800
+    if late_flow_b:
+        # Channel B flow releases the deferred value
+        assert ep2_electrical.get("active_power") == -600
+        if late_flow_a:
+            # When both mitigations enabled, flow A releases both and recalculates total
+            assert ep3_electrical.get("active_power") == 200  # 800 + (-600)
+        else:
+            # When only B mitigation enabled, total not recalculated (B branch doesn't call it)
+            assert ep3_electrical.get("active_power") is None
+    else:
+        # Without mitigation for B, power was already reported unsigned
+        assert ep2_electrical.get("active_power") == 600
+        assert ep3_electrical.get("active_power") == 1400  # 800 + 600
+
+    # Test channel A zero power deferral - device omits flow DP when power is 0
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x00\x00"
+    )  # DP 101: power_a = 0 (no flow DP sent)
+
     if late_flow_a:
-        # Test zero power - should be held like other power values
-        send_dp_message(
-            b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x00\x00"
-        )  # DP 101: power_a = 0
-
-        # Zero power should be held (not available yet)
+        # Zero power is deferred (not reported yet)
         assert ep1_electrical.get("active_power") == 800  # Still showing previous
-
-        # Test non-zero power after zero - should release the zero
-        send_dp_message(
-            b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x01\x90"
-        )  # DP 101: power_a = 400
-
-        # Should release the previous zero power
+    else:
+        # Without mitigation, zero is reported immediately (unsigned)
         assert ep1_electrical.get("active_power") == 0
 
-        # Send flow message to release the held 400 power
-        send_dp_message(
-            b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
-        )  # DP 102: energy_flow_a = 0 (Forward)
-
-        # Now the 400W should be available
-        assert ep1_electrical.get("active_power") == 400
+    # Test channel B zero power deferral
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x00\x00"
+    )  # DP 105: power_b = 0 (no flow DP sent)
 
     if late_flow_b:
-        # Test zero power deferred for channel B
-        send_dp_message(
-            b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x00\x00"
-        )  # DP 105: power_b = 0
-
-        # Zero power should be held (not available yet)
-        assert ep2_electrical.get("active_power") == -600  # Still showing previous
-
-        # Send a Channel A update to trigger new interval and release deferred B
-        send_dp_message(
-            b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x84"
-        )  # DP 101: power_a = 900
-
-        # Deferred zero for B should now be released, total calculated with released B and new A
+        # Zero power is deferred
+        expected_b = -600 if late_flow_b else 600
+        assert ep2_electrical.get("active_power") == expected_b
+    else:
+        # Without mitigation, zero is reported immediately
         assert ep2_electrical.get("active_power") == 0
-        if late_flow_a:
-            # Previous A (400) + released B (0)
-            assert ep3_electrical.get("active_power") == 400
-        else:
-            # New A (900) + released B (0)
-            assert ep3_electrical.get("active_power") == 900
 
-        # New A value should be held if late_flow_a is enabled, otherwise reported immediately
-        if late_flow_a:
-            assert ep1_electrical.get("active_power") == 400  # Still previous
-        else:
-            assert ep1_electrical.get("active_power") == 900  # New value available
+    # Next interval: Channel A flow arrives first - tests cross-channel release
+    send_dp_message(
+        b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
+    )  # DP 102: energy_flow_a = 0 (releases deferred zeros)
 
-        # Send a Channel B update to complete the interval and calculate total with new A
-        send_dp_message(
-            b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x03\x84"
-        )  # DP 105: power_b = 900
+    if late_flow_a:
+        # Flow message releases the deferred zero for A
+        assert ep1_electrical.get("active_power") == 0
+    else:
+        # Without mitigation, zero was already reported
+        assert ep1_electrical.get("active_power") == 0
 
-        # If late_flow_b is enabled, power B is deferred until flow DP arrives
-        if late_flow_b:
-            # Power B is held, total not yet updated
+    if late_flow_b:
+        # Cross-channel: A's flow also releases deferred zero for B, total recalculated
+        assert ep2_electrical.get("active_power") == 0
+        assert ep3_electrical.get("active_power") == 0  # 0 + 0 (recalculated)
+    else:
+        # Without mitigation for B, zero was already reported
+        assert ep2_electrical.get("active_power") == 0
+        assert ep3_electrical.get("active_power") == 0  # 0 + 0
+
+    # Then new power A arrives
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x84"
+    )  # DP 101: power_a = 900
+
+    if late_flow_a:
+        # Power A is deferred, not released yet
+        assert ep1_electrical.get("active_power") == 0  # Previous A
+        # Total not recalculated (A still deferred)
+        assert ep3_electrical.get("active_power") == 0  # 0 + 0, unchanged
+    else:
+        # Without mitigation, power is available immediately (unsigned)
+        assert ep1_electrical.get("active_power") == 900
+        # Total is recalculated immediately since A is not deferred
+        assert ep3_electrical.get("active_power") == 900  # 900 + 0
+
+    # Send a flow message for B to trigger total update
+    send_dp_message(
+        b"\x09\x0a\x02\x00\x80\x68\x04\x00\x01\x00"
+    )  # DP 104: energy_flow_b = 0 (Forward)
+
+    if late_flow_a:
+        # Total is calculated with deferred A (900) not released yet, using previous A (0)
+        assert ep3_electrical.get("active_power") == 0  # 0 + 0
+    else:
+        # Without mitigation for A, 900 was already reported, now total is recalculated
+        assert ep3_electrical.get("active_power") == 900  # 900 + 0
+
+    # Test simultaneous zeros on both channels
+    # Reset baseline to different values
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x84"
+    )  # DP 101: power_a = 900
+    send_dp_message(
+        b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
+    )  # DP 102: energy_flow_a = 0 (releases previous deferred if any)
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x02\x58"
+    )  # DP 105: power_b = 600
+    send_dp_message(
+        b"\x09\x0a\x02\x00\x80\x68\x04\x00\x01\x00"
+    )  # DP 104: energy_flow_b = 0 (Forward)
+
+    assert ep1_electrical.get("active_power") == 900
+    assert ep2_electrical.get("active_power") == 600
+    # With new quirk behavior, total recalculates on channel A updates
+    # If late_flow_a is True, flow A already triggered total=1500 when it released deferred A
+    # If late_flow_a is False, power A triggered total=900, not updated by B messages
+    if late_flow_a:
+        assert (
+            ep3_electrical.get("active_power") == 1500
+        )  # Updated when flow A processed
+    else:
+        assert ep3_electrical.get("active_power") == 900  # Only updated on A messages
+
+    # Send zero for both channels simultaneously (neither sends flow DP)
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x00\x00"
+    )  # DP 101: power_a = 0
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x00\x00"
+    )  # DP 105: power_b = 0
+
+    # Check based on mitigation settings
+    if late_flow_a:
+        assert ep1_electrical.get("active_power") == 900  # Deferred, previous A
+    else:
+        assert ep1_electrical.get("active_power") == 0  # Reported immediately
+
+    if late_flow_b:
+        assert ep2_electrical.get("active_power") == 600  # Deferred, previous B
+    else:
+        assert ep2_electrical.get("active_power") == 0  # Reported immediately
+
+    # Total is not recalculated when either channel is deferred
+    if late_flow_a or late_flow_b:
+        # When A is not deferred but gets an update, it triggers total calculation
+        if not late_flow_a:
             assert (
-                ep2_electrical.get("active_power") == 0
-            )  # Still previous released value
-            # Total still at previous value
-            if late_flow_a:
-                assert ep3_electrical.get("active_power") == 400  # 400 + 0
-            else:
-                assert ep3_electrical.get("active_power") == 900  # 900 + 0
-
-            # Send flow DP to release power_b
-            send_dp_message(
-                b"\x09\x0a\x02\x00\x80\x68\x04\x00\x01\x01"
-            )  # DP 104: energy_flow_b = 1 (Reverse)
-
-        # Total should now include the current A and B values
-        if late_flow_a:
-            assert ep3_electrical.get("active_power") == -500  # 400 + (-900)
+                ep3_electrical.get("active_power") == 600
+            )  # 0 + 600 (B still deferred)
         else:
-            assert ep3_electrical.get("active_power") == 0  # 900 + (-900)
+            assert (
+                ep3_electrical.get("active_power") == 1500
+            )  # Unchanged (deferral active)
+    else:
+        assert ep3_electrical.get("active_power") == 0  # Both reported as 0
+
+    # Send next interval update for A to release deferred zeros
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x00\x64"
+    )  # DP 101: power_a = 100 (deferred if late_flow_a enabled)
+
+    # Check release behavior - A update releases both deferred zeros
+    if late_flow_a and late_flow_b:
+        # Both deferred zeros are released, total recalculated
+        assert ep1_electrical.get("active_power") == 0  # Released zero from A
+        assert ep2_electrical.get("active_power") == 0  # Released zero from B
+        assert ep3_electrical.get("active_power") == 0  # 0 + 0 (recalculated)
+    elif late_flow_a:
+        # Only A was deferred and is now released, B already at 0, total recalculated
+        assert ep1_electrical.get("active_power") == 0  # Released zero from A
+        assert ep2_electrical.get("active_power") == 0  # Already 0
+        assert ep3_electrical.get("active_power") == 0  # 0 + 0 (recalculated)
+    elif late_flow_b:
+        # A reported immediately (100), B deferred zero is released
+        # Total correctly includes new A value (100) after B's deferred zero is released
+        assert (
+            ep1_electrical.get("active_power") == 100
+        )  # New value reported immediately
+        assert ep2_electrical.get("active_power") == 0  # Released zero from B
+        assert (
+            ep3_electrical.get("active_power") == 100
+        )  # 100 + 0 (now correctly calculated)
+    else:
+        # Neither deferred, A=100 reported immediately, B already 0
+        # Total recalculated when A gets new value
+        assert ep1_electrical.get("active_power") == 100  # New value
+        assert ep2_electrical.get("active_power") == 0  # Already 0
+        assert ep3_electrical.get("active_power") == 100  # 100 + 0 (recalculated)
+
+    # Send flow message to release the deferred 100W (if applicable)
+    send_dp_message(
+        b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
+    )  # DP 102: energy_flow_a = 0 (Forward)
+
+    # 100W is now available with correct sign
+    assert ep1_electrical.get("active_power") == 100
+
+    # Trigger total recalculation with a B update
+    send_dp_message(
+        b"\x09\x0a\x02\x00\x80\x68\x04\x00\x01\x00"
+    )  # DP 104: energy_flow_b = 0
+
+    assert ep1_electrical.get("active_power") == 100
+    assert ep2_electrical.get("active_power") == 0
+    assert ep3_electrical.get("active_power") == 100  # 100 + 0
