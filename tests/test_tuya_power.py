@@ -309,54 +309,87 @@ async def test_matseeplus_late_flow_power_reporting(
         status = tuya_manufacturer.handle_get_data(data.data)
         assert status == foundation.Status.SUCCESS
 
-    # Send power messages first
+    # Test with correct device sequence over two intervals
+    # Interval 1: Establish baseline power values (stored but not reported with mitigation)
+    send_dp_message(
+        b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
+    )  # DP 102: energy_flow_a = 0 (Forward, for previous/initial)
+
     send_dp_message(
         b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x20"
-    )  # DP 101: power_a = 800
+    )  # DP 101: power_a = 800 (for current interval)
 
-    send_dp_message(
-        b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x02\x58"
-    )  # DP 105: power_b = 600
-
-    # Check if power is held or available based on mitigation settings
+    # With mitigation enabled, power_a is stored but not reported yet (waits for next interval's flow)
+    # Without mitigation, power_a uses current flow and reports immediately
     if late_flow_a:
         assert ep1_electrical.get("active_power") is None
     else:
-        # Without mitigation, power is available immediately (unsigned)
         assert ep1_electrical.get("active_power") == 800
-
-    if late_flow_b:
-        assert ep2_electrical.get("active_power") is None
-    else:
-        # Without mitigation, power is available immediately (unsigned)
-        assert ep2_electrical.get("active_power") == 600
-
-    # Send flow messages
-    send_dp_message(
-        b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
-    )  # DP 102: energy_flow_a = 0 (Forward)
-
-    # Power A is now available (positive for forward flow)
-    assert ep1_electrical.get("active_power") == 800
 
     send_dp_message(
         b"\x09\x0a\x02\x00\x80\x68\x04\x00\x01\x01"
-    )  # DP 104: energy_flow_b = 1 (Reverse)
+    )  # DP 104: energy_flow_b = 1 (Reverse, for previous/initial)
 
-    # Check power B and total based on mitigation setting
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x02\x58"
+    )  # DP 105: power_b = 600 (for current interval)
+
+    # Check power B and total after interval 1
     if late_flow_b:
-        # With mitigation, power B is updated with correct sign (negative for reverse)
+        assert ep2_electrical.get("active_power") is None
+    else:
+        # Without mitigation, power_b uses current flow_b and reports immediately
         assert ep2_electrical.get("active_power") == -600
-        # Channel B processing calls _maybe_report_total_power()
-        # Both report intervals now equal _interval (1), so total is calculated
+
+    # Total calculation
+    if late_flow_a and late_flow_b:
+        # Both deferred to next interval
+        assert ep3_electrical.get("active_power") is None
+    elif late_flow_a:
+        # A deferred, B reported, but intervals don't match so no total
+        assert ep3_electrical.get("active_power") is None
+    elif late_flow_b:
+        # B deferred, A reported, but intervals don't match so no total
+        assert ep3_electrical.get("active_power") is None
+    else:
+        # Both reported in interval 1: A=800, B=-600, total=200
+        assert ep3_electrical.get("active_power") == 200
+
+    # Interval 2: Flow messages process powers from interval 1 (flow sent because interval 2 power ≠ 0)
+    send_dp_message(
+        b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
+    )  # DP 102: energy_flow_a = 0 (Forward, for interval 1)
+
+    # If mitigation enabled, flow_a now processes stored power_a(800) from interval 1
+    if late_flow_a:
+        assert ep1_electrical.get("active_power") == 800
+    else:
+        # Already reported, unchanged
+        assert ep1_electrical.get("active_power") == 800
+
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x20"
+    )  # DP 101: power_a = 800 (for interval 2, stored for next interval if mitigation enabled)
+
+    send_dp_message(
+        b"\x09\x0a\x02\x00\x80\x68\x04\x00\x01\x01"
+    )  # DP 104: energy_flow_b = 1 (Reverse, for interval 1)
+
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x02\x58"
+    )  # DP 105: power_b = 600 (for interval 2, stored for next interval if mitigation enabled)
+
+    # Check final power B and total after interval 2
+    if late_flow_b:
+        # flow_b processes stored power_b(600) with reverse flow = -600
+        assert ep2_electrical.get("active_power") == -600
+        # Both channels now at interval 2, total calculated
         assert ep3_electrical.get("active_power") == 200  # 800 + (-600)
     else:
-        # Without mitigation, power B was already reported as unsigned (600)
-        # flow_b doesn't update the power value, but updates _report_interval_b to match _interval
-        assert ep2_electrical.get("active_power") == 600
-        # Channel B processing calls _maybe_report_total_power()
-        # Both report intervals now equal _interval (1), so total is calculated
-        assert ep3_electrical.get("active_power") == 1400  # 800 + 600
+        # Already reported as -600
+        assert ep2_electrical.get("active_power") == -600
+        # Total already calculated or now calculated
+        assert ep3_electrical.get("active_power") == 200
 
 
 @pytest.mark.parametrize("late_flow_enabled", [True, False])
@@ -382,13 +415,13 @@ async def test_matseeplus_late_flow_non_power_attribute_delay(
         status = tuya_manufacturer.handle_get_data(data.data)
         assert status == foundation.Status.SUCCESS
 
-    # Send initial power and flow to establish baseline
-    send_dp_message(
-        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x20"
-    )  # DP 101: power_a = 800
+    # Send initial flow and power to establish baseline (correct device sequence)
     send_dp_message(
         b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
-    )  # DP 102: energy_flow_a = 0 (Forward)
+    )  # DP 102: energy_flow_a = 0 (Forward, for previous/initial)
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x20"
+    )  # DP 101: power_a = 800 (for current interval)
 
     # Send current measurement
     send_dp_message(
@@ -444,163 +477,161 @@ async def test_matseeplus_late_flow_zero_power_deferral(
         status = tuya_manufacturer.handle_get_data(data.data)
         assert status == foundation.Status.SUCCESS
 
-    # Establish baseline with both channels
-    send_dp_message(
-        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x20"
-    )  # DP 101: power_a = 800
-    send_dp_message(
-        b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x02\x58"
-    )  # DP 105: power_b = 600
+    # Establish baseline with both channels using correct device sequence over two intervals
+    # Interval 1: Store initial power values
     send_dp_message(
         b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
-    )  # DP 102: energy_flow_a = 0 (Forward)
+    )  # DP 102: energy_flow_a = 0 (Forward, for previous/init)
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x20"
+    )  # DP 101: power_a = 800 (for interval 1)
     send_dp_message(
         b"\x09\x0a\x02\x00\x80\x68\x04\x00\x01\x01"
-    )  # DP 104: energy_flow_b = 1 (Reverse)
+    )  # DP 104: energy_flow_b = 1 (Reverse, for previous/init)
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x02\x58"
+    )  # DP 105: power_b = 600 (for interval 1)
 
+    # Interval 2: Flow processes powers from interval 1
+    send_dp_message(
+        b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
+    )  # DP 102: energy_flow_a = 0 (Forward, for interval 1, sent because interval 2 power ≠ 0)
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x20"
+    )  # DP 101: power_a = 800 (for interval 2)
+    send_dp_message(
+        b"\x09\x0a\x02\x00\x80\x68\x04\x00\x01\x01"
+    )  # DP 104: energy_flow_b = 1 (Reverse, for interval 1, sent because interval 2 power ≠ 0)
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x02\x58"
+    )  # DP 105: power_b = 600 (for interval 2)
+
+    # After interval 2, baseline is established
     assert ep1_electrical.get("active_power") == 800
     if late_flow_b:
-        # Channel B flow releases the deferred value with correct sign
+        # flow_b processed power_b(600) from interval 1 with reverse flow
         assert ep2_electrical.get("active_power") == -600
-        # Channel B processing calls _maybe_report_total_power() with both intervals matching
+        # Both at interval 2, total calculated
         assert ep3_electrical.get("active_power") == 200  # 800 + (-600)
     else:
-        # Without mitigation for B, power was already reported unsigned as 600
-        assert ep2_electrical.get("active_power") == 600
-        # Channel B processing updates _report_interval_b and calls _maybe_report_total_power()
-        assert ep3_electrical.get("active_power") == 1400  # 800 + 600
+        # Without mitigation, power_b used current flow and reported in both intervals
+        # Still shows -600 from interval 2 flow_b processing
+        assert ep2_electrical.get("active_power") == -600
+        # Total calculated
+        assert ep3_electrical.get("active_power") == 200  # 800 + (-600)
 
-    # Test channel A zero power deferral - device omits flow DP when power is 0
+    # Interval 3: Test channel A zero power deferral - device omits flow DP when power is 0
+    # Since interval 3 power_a = 0, no flow_a is sent at start of interval 3
     send_dp_message(
         b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x00\x00"
-    )  # DP 101: power_a = 0 (no flow DP sent)
+    )  # DP 101: power_a = 0 (no flow_a DP sent because current power is 0)
 
     if late_flow_a:
-        # Zero power is deferred (not reported yet)
-        assert ep1_electrical.get("active_power") == 800  # Still showing previous
+        # Zero power is deferred to next interval
+        assert (
+            ep1_electrical.get("active_power") == 800
+        )  # Still showing from interval 2
     else:
-        # Without mitigation, zero is reported immediately (unsigned)
+        # Without mitigation, zero is reported immediately
         assert ep1_electrical.get("active_power") == 0
 
-    # Test channel B zero power deferral
+    # Test channel B zero power deferral - no flow_b sent because power_b = 0
     send_dp_message(
         b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x00\x00"
-    )  # DP 105: power_b = 0 (no flow DP sent)
+    )  # DP 105: power_b = 0 (no flow_b DP sent because current power is 0)
 
     if late_flow_b:
-        # Zero power is deferred (report_interval_b set to _interval + 1)
-        # Previous value still showing
+        # Zero power is deferred to next interval
         assert ep2_electrical.get("active_power") == -600
     else:
         # Without mitigation, zero is reported immediately
         assert ep2_electrical.get("active_power") == 0
-        # Channel B update recalculates total based on current interval matching
+        # Total recalculated based on interval matching
         if late_flow_a:
-            # A is deferred to interval 2, B is at interval 1, intervals don't match
-            # Total stays at previous value (1400 or 200 depending on late_flow_b initial state)
-            # Since late_flow_b=False here, baseline total was 1400
-            assert ep3_electrical.get("active_power") == 1400
+            # A deferred to interval 4, B at interval 3, intervals don't match
+            assert ep3_electrical.get("active_power") == 200  # Unchanged from baseline
         else:
-            # A already reported 0 at interval 1, B now reports 0 at interval 1, both match
-            assert ep3_electrical.get("active_power") == 0
+            # Both at interval 3, total recalculated
+            assert ep3_electrical.get("active_power") == 0  # 0 + 0
 
-    # Next interval: Channel A flow arrives first - tests cross-channel release
+    # Interval 4: Non-zero power returns, flow sent for interval 3
+    # flow_a sent because interval 4 power ≠ 0, reports direction for interval 3
     send_dp_message(
         b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
-    )  # DP 102: energy_flow_a = 0 (releases deferred zeros)
+    )  # DP 102: energy_flow_a = 0 (Forward, for interval 3 which had power=0)
 
     if late_flow_a:
-        # Flow message releases the deferred zero for A
+        # flow_a processes stored power from interval 3 (which was 0)
         assert ep1_electrical.get("active_power") == 0
     else:
-        # Without mitigation, zero was already reported
+        # Already reported as 0
         assert ep1_electrical.get("active_power") == 0
+
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x84"
+    )  # DP 101: power_a = 900 (for interval 4)
+
+    # flow_b sent because interval 4 power ≠ 0
+    send_dp_message(
+        b"\x09\x0a\x02\x00\x80\x68\x04\x00\x01\x00"
+    )  # DP 104: energy_flow_b = 0 (Forward, for interval 3 which had power=0)
 
     if late_flow_b:
-        # Cross-channel: A's flow increments interval to 2, releases deferred zero for B (report_interval_b was 2)
+        # flow_b processes stored power from interval 3 (which was 0)
         assert ep2_electrical.get("active_power") == 0
-        # After flow_a releases both deferred values, _report_interval_a=2, _report_interval_b=2, _interval=2
-        assert (
-            ep3_electrical.get("active_power") == 0
-        )  # 0 + 0 (recalculated by flow_a release)
+        # Both channels now at interval 4, total calculated
+        assert ep3_electrical.get("active_power") == 0  # 0 + 0
     else:
-        # Without mitigation for B, zero was already reported at interval 1
-        # After flow_a: _interval=2, _report_interval_a=2, _report_interval_b=1, no total update
+        # Already showing 0
         assert ep2_electrical.get("active_power") == 0
-        assert (
-            ep3_electrical.get("active_power") == 0
-        )  # Unchanged from previous (0 + 0)
-
-    # Then new power A arrives
-    send_dp_message(
-        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x84"
-    )  # DP 101: power_a = 900
-
-    if late_flow_a:
-        # Power A is deferred to interval 3, not released yet
-        assert ep1_electrical.get("active_power") == 0  # Previous A
-        # Total not recalculated (_report_interval_a=3, intervals don't match)
-        assert ep3_electrical.get("active_power") == 0  # 0 + 0, unchanged
-    else:
-        # Without mitigation, power is reported immediately at interval 2
-        assert ep1_electrical.get("active_power") == 900
-        # Total calculation depends on whether _report_interval_b also equals 2
-        if late_flow_b:
-            # B was deferred to interval 2, both at interval 2, total calculated
-            assert ep3_electrical.get("active_power") == 900  # 900 + 0
+        # Total depends on interval matching
+        if late_flow_a:
+            # A at interval 4, B at interval 4, both match
+            assert ep3_electrical.get("active_power") == 0  # 0 + 0
         else:
-            # B is at interval 1, A is at interval 2, intervals don't match, no total update
-            assert ep3_electrical.get("active_power") == 0  # Unchanged from previous
+            # Already 0
+            assert ep3_electrical.get("active_power") == 0
 
-    # Send a flow message for B to trigger total update
-    send_dp_message(
-        b"\x09\x0a\x02\x00\x80\x68\x04\x00\x01\x00"
-    )  # DP 104: energy_flow_b = 0 (Forward)
-
-    # flow_b processing updates _report_interval_b to current interval and calls _maybe_report_total_power()
-    if late_flow_a:
-        # A is deferred to interval 3, B now at interval 2, intervals don't match, no total update
-        assert ep3_electrical.get("active_power") == 0  # 0 + 0, unchanged
-    else:
-        if late_flow_b:
-            # A at interval 2, B at interval 2 (after release by flow_a earlier), both match
-            # flow_b processes but doesn't change power_b (still 0), updates _report_interval_b to 3
-            # Now intervals don't match (A=2, B=3), no total update
-            assert ep3_electrical.get("active_power") == 900  # Unchanged from previous
-        else:
-            # A at interval 2, B now updated to interval 2, both match, total recalculated
-            assert ep3_electrical.get("active_power") == 900  # 900 + 0
-
-    # Test simultaneous zeros on both channels
-    # Reset baseline to different values
-    send_dp_message(
-        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x84"
-    )  # DP 101: power_a = 900
-    send_dp_message(
-        b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
-    )  # DP 102: energy_flow_a = 0 (releases previous deferred if any)
     send_dp_message(
         b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x02\x58"
-    )  # DP 105: power_b = 600
+    )  # DP 105: power_b = 600 (for interval 4)
+
+    # Interval 5: Process powers from interval 4
+    send_dp_message(
+        b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
+    )  # DP 102: energy_flow_a = 0 (Forward, for interval 4)
+
+    if late_flow_a:
+        # flow_a processes stored power_a(900) from interval 4
+        assert ep1_electrical.get("active_power") == 900
+    else:
+        # Already processed in interval 4
+        assert ep1_electrical.get("active_power") == 900
+
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x03\x84"
+    )  # DP 101: power_a = 900 (for interval 5)
+
     send_dp_message(
         b"\x09\x0a\x02\x00\x80\x68\x04\x00\x01\x00"
-    )  # DP 104: energy_flow_b = 0 (Forward)
+    )  # DP 104: energy_flow_b = 0 (Forward, for interval 4)
 
-    assert ep1_electrical.get("active_power") == 900
-    assert ep2_electrical.get("active_power") == 600
-    # Total recalculates when both report intervals match current interval
-    if late_flow_a:
-        # flow_a released deferred power_a(900), both A and B at same interval, total=1500
-        assert ep3_electrical.get("active_power") == 1500
+    if late_flow_b:
+        # flow_b processes stored power_b(600) from interval 4
+        assert ep2_electrical.get("active_power") == 600
+        # Both at interval 5, total calculated
+        assert ep3_electrical.get("active_power") == 1500  # 900 + 600
     else:
-        if late_flow_b:
-            # Total remains at 600 from earlier due to interval desynchronization
-            assert ep3_electrical.get("active_power") == 600
-        else:
-            # power_a(900) and power_b(600) both reported, flow_b updated intervals to match, total=1500
-            assert ep3_electrical.get("active_power") == 1500
+        # Already processed
+        assert ep2_electrical.get("active_power") == 600
+        assert ep3_electrical.get("active_power") == 1500
 
-    # Send zero for both channels simultaneously (neither sends flow DP)
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x02\x58"
+    )  # DP 105: power_b = 600 (for interval 5)
+
+    # Interval 6: Both channels go to zero simultaneously
+    # No flow messages sent because both powers are 0
     send_dp_message(
         b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x00\x00"
     )  # DP 101: power_a = 0
@@ -608,111 +639,98 @@ async def test_matseeplus_late_flow_zero_power_deferral(
         b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x00\x00"
     )  # DP 105: power_b = 0
 
-    # Check based on mitigation settings
     if late_flow_a:
-        assert ep1_electrical.get("active_power") == 900  # Deferred, previous A
+        # Deferred to interval 7
+        assert ep1_electrical.get("active_power") == 900
     else:
-        assert ep1_electrical.get("active_power") == 0  # Reported immediately
+        # Reported immediately
+        assert ep1_electrical.get("active_power") == 0
 
     if late_flow_b:
-        assert ep2_electrical.get("active_power") == 600  # Deferred, previous B
+        # Deferred to interval 7
+        assert ep2_electrical.get("active_power") == 600
     else:
-        assert ep2_electrical.get("active_power") == 0  # Reported immediately
+        # Reported immediately
+        assert ep2_electrical.get("active_power") == 0
 
-    # Total recalculation depends on whether report intervals match current interval
+    # Total depends on which channels reported
     if late_flow_a and late_flow_b:
-        # Both deferred, intervals don't match, total unchanged
+        # Both deferred, intervals don't match current
         assert ep3_electrical.get("active_power") == 1500  # Unchanged
     elif late_flow_a:
-        # A deferred, B reported 0 immediately, intervals don't match, total unchanged
+        # A deferred to 7, B at 6, don't match
         assert ep3_electrical.get("active_power") == 1500  # Unchanged
     elif late_flow_b:
-        # A reported 0 immediately, B deferred, intervals don't match, total unchanged
+        # A at 6, B deferred to 7, don't match
         assert ep3_electrical.get("active_power") == 1500  # Unchanged
     else:
-        # Both reported immediately, intervals match, total recalculated
+        # Both at 6, total recalculated
         assert ep3_electrical.get("active_power") == 0  # 0 + 0
 
-    # Send next interval update for A to release deferred zeros
-    send_dp_message(
-        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x00\x64"
-    )  # DP 101: power_a = 100 (deferred if late_flow_a enabled)
-
-    # power_a=100 arrives - deferred zeros NOT released yet (only flow_a releases)
-    if late_flow_a and late_flow_b:
-        # A's new value deferred, both still showing previous, deferred zeros not yet released
-        assert (
-            ep1_electrical.get("active_power") == 900
-        )  # Previous A (deferred 0 not released)
-        assert (
-            ep2_electrical.get("active_power") == 600
-        )  # Previous B (deferred 0 not released)
-        assert ep3_electrical.get("active_power") == 1500  # Unchanged
-    elif late_flow_a:
-        # A's new value deferred, B already showing 0, A's deferred 0 not yet released
-        assert (
-            ep1_electrical.get("active_power") == 900
-        )  # Previous A (deferred 0 not released)
-        assert ep2_electrical.get("active_power") == 0  # Already 0
-        assert ep3_electrical.get("active_power") == 1500  # Unchanged
-    elif late_flow_b:
-        # A reports 100 immediately, B's deferred 0 not yet released (only flow_a releases cross-channel)
-        assert ep1_electrical.get("active_power") == 100  # New value reported
-        assert (
-            ep2_electrical.get("active_power") == 600
-        )  # Previous B (deferred 0 not released)
-        # Total stays at 600 because intervals don't match (A at new interval, B deferred to different interval)
-        assert (
-            ep3_electrical.get("active_power") == 600
-        )  # Unchanged (intervals don't match)
-    else:
-        # A reports 100 immediately, B already 0, intervals synchronized
-        assert ep1_electrical.get("active_power") == 100  # New value
-        assert ep2_electrical.get("active_power") == 0  # Already 0
-        # Intervals match, total recalculated
-        assert ep3_electrical.get("active_power") == 100  # 100 + 0
-
-    # Send flow_a to release deferred values and process new power value
+    # Interval 7: Non-zero power returns, flows sent for interval 6
     send_dp_message(
         b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
-    )  # DP 102: energy_flow_a = 0 (Forward)
+    )  # DP 102: energy_flow_a = 0 (for interval 6)
 
-    # flow_a increments interval, releases any deferred values, then processes the new power_a(100)
-    if late_flow_a and late_flow_b:
-        # Both deferred zeros released, then power_a(100) processed and reported
-        assert (
-            ep1_electrical.get("active_power") == 100
-        )  # 100 released with correct sign
-        assert ep2_electrical.get("active_power") == 0  # Deferred 0 released by flow_a
-        assert ep3_electrical.get("active_power") == 100  # 100 + 0
-    elif late_flow_a:
-        # Deferred A zero released, then power_a(100) processed, but B interval doesn't match
-        assert (
-            ep1_electrical.get("active_power") == 100
-        )  # 100 released with correct sign
-        assert ep2_electrical.get("active_power") == 0  # Already 0
-        # Total not recalculated (intervals don't match: A at M+2, B at M+1)
-        assert ep3_electrical.get("active_power") == 1500  # Unchanged
-    elif late_flow_b:
-        # A(100) already reported at M+1, B's deferred 0 (at M+2) released by flow_a cross-channel
-        # flow_a increments to M+2, releases B's deferred 0, then processes A updating _report_interval_a to M+2
-        assert ep1_electrical.get("active_power") == 100  # Already 100
-        assert ep2_electrical.get("active_power") == 0  # Deferred 0 released
-        # After flow_a processing, both intervals at M+2, total recalculated
-        assert ep3_electrical.get("active_power") == 100  # 100 + 0 (recalculated)
+    if late_flow_a:
+        # Processes deferred 0 from interval 6
+        assert ep1_electrical.get("active_power") == 0
     else:
-        # Neither deferred, both at same interval, flow_a updates A's interval to M+2
-        assert ep1_electrical.get("active_power") == 100  # Already 100
-        assert ep2_electrical.get("active_power") == 0  # Already 0
-        # A at M+2, B at M+1, intervals don't match, total unchanged
-        assert ep3_electrical.get("active_power") == 100  # Unchanged
+        # Already 0
+        assert ep1_electrical.get("active_power") == 0
 
-    # Send flow_b to update channel B intervals
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x00\x64"
+    )  # DP 101: power_a = 100 (for interval 7)
+
     send_dp_message(
         b"\x09\x0a\x02\x00\x80\x68\x04\x00\x01\x00"
-    )  # DP 104: energy_flow_b = 0
+    )  # DP 104: energy_flow_b = 0 (for interval 6)
 
-    # flow_b processing doesn't change power values but may update total if intervals sync
-    assert ep1_electrical.get("active_power") == 100
-    assert ep2_electrical.get("active_power") == 0
-    assert ep3_electrical.get("active_power") == 100  # 100 + 0
+    if late_flow_b:
+        # Processes deferred 0 from interval 6
+        assert ep2_electrical.get("active_power") == 0
+        # Both at interval 7, total calculated
+        assert ep3_electrical.get("active_power") == 0  # 0 + 0
+    else:
+        # Already 0
+        assert ep2_electrical.get("active_power") == 0
+        assert ep3_electrical.get("active_power") == 0
+
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x01\xf4"
+    )  # DP 105: power_b = 500 (for interval 7)
+
+    # Interval 8: Process powers from interval 7
+    send_dp_message(
+        b"\x09\x11\x02\x00\x87\x66\x04\x00\x01\x00"
+    )  # DP 102: energy_flow_a = 0 (for interval 7)
+
+    if late_flow_a:
+        # Processes power_a(100) from interval 7
+        assert ep1_electrical.get("active_power") == 100
+    else:
+        # Already processed
+        assert ep1_electrical.get("active_power") == 100
+
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x65\x02\x00\x04\x00\x00\x00\x64"
+    )  # DP 101: power_a = 100 (for interval 8)
+
+    send_dp_message(
+        b"\x09\x0a\x02\x00\x80\x68\x04\x00\x01\x00"
+    )  # DP 104: energy_flow_b = 0 (for interval 7)
+
+    if late_flow_b:
+        # Processes power_b(500) from interval 7
+        assert ep2_electrical.get("active_power") == 500
+        # Both at interval 8, total calculated
+        assert ep3_electrical.get("active_power") == 600  # 100 + 500
+    else:
+        # Already processed
+        assert ep2_electrical.get("active_power") == 500
+        assert ep3_electrical.get("active_power") == 600
+
+    send_dp_message(
+        b"\x09\x1f\x02\x00\x04\x69\x02\x00\x04\x00\x00\x01\xf4"
+    )  # DP 105: power_b = 500 (for interval 8)
