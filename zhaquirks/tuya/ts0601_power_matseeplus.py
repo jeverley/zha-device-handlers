@@ -160,6 +160,7 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
     def __init__(self, *args, **kwargs):
         """Init."""
         self._interval: int | None = 0
+        self._interval_complete: bool = False
         self._report_interval_a: int | None = 0
         self._report_interval_b: int | None = 0
         self._power_a: int | None = None
@@ -251,7 +252,8 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
         super().update_attribute(attr_name, value)
 
         #  Increment interval when ENERGY_FLOW_A is received
-        if attr_name == self.ENERGY_FLOW_A:
+        if self._interval_complete and attr_name in (self.ENERGY_FLOW_A, self.POWER_A):
+            self._interval_complete = False
             self._interval = (self._interval or 0) + 1
 
             # Release deferred values from the previous interval before processing updates (handles _Z2E204_81yrt3lo bug)
@@ -294,6 +296,9 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
                 )
             )
             self._maybe_report_total_power()
+
+        if attr_name == self.POWER_B:
+            self._interval_complete = True
 
 
 (
