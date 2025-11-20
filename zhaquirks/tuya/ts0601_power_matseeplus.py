@@ -159,10 +159,10 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
 
     def __init__(self, *args, **kwargs):
         """Init."""
-        self._interval: int | None = 0
-        self._interval_complete: bool = False
-        self._report_interval_a: int | None = 0
-        self._report_interval_b: int | None = 0
+        self._interval: int | None = None
+        self._interval_complete: bool = True
+        self._report_interval_a: int | None = None
+        self._report_interval_b: int | None = None
         self._power_a: int | None = None
         self._power_b: int | None = None
         super().__init__(*args, **kwargs)
@@ -188,7 +188,8 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
     def _maybe_report_total_power(self):
         """Calculate and report total power if both channels are ready."""
         if (
-            self._report_interval_a == self._interval
+            self._interval is not None
+            and self._report_interval_a == self._interval
             and self._report_interval_b == self._interval
             and self._power_a is not None
             and self._power_b is not None
@@ -248,7 +249,14 @@ class TuyaMatSeePlusManufCluster(TuyaMCUCluster):
         return stored_power, report_interval
 
     def update_attribute(self, attr_name: str, value):
-        """Handle reports to Electrical Measurement power attributes after aligning with energy flow."""
+        """Handle reports to Electrical Measurement power attributes after aligning with energy flow.
+
+        Reporting sequence per interval:
+        1. ENERGY_FLOW_A (for previous interval on _TZE204_81yrt3lo, omitted if current interval power is 0)
+        2. POWER_A (for current interval)
+        3. ENERGY_FLOW_B (for previous interval on _TZE204_81yrt3lo, omitted if current interval power is 0)
+        4. POWER_B (for current interval)
+        """
         super().update_attribute(attr_name, value)
 
         #  Increment interval when ENERGY_FLOW_A is received
