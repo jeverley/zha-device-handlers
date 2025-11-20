@@ -496,10 +496,12 @@ async def test_matseeplus_late_flow_zero_power_deferral(
         assert ep2_electrical.get("active_power") == 0
         # Channel B update recalculates total based on current interval matching
         if late_flow_a:
-            # A is deferred to interval 2, B is at interval 1, no match, total unchanged
+            # A is deferred to interval 2, B is at interval 1, intervals don't match
+            # Total stays at previous value (1400 or 200 depending on late_flow_b initial state)
+            # Since late_flow_b=False here, baseline total was 1400
             assert ep3_electrical.get("active_power") == 1400
         else:
-            # A already reported 0 at interval 1, B now reports 0 at interval 1, total=0
+            # A already reported 0 at interval 1, B now reports 0 at interval 1, both match
             assert ep3_electrical.get("active_power") == 0
 
     # Next interval: Channel A flow arrives first - tests cross-channel release
@@ -518,12 +520,16 @@ async def test_matseeplus_late_flow_zero_power_deferral(
         # Cross-channel: A's flow increments interval to 2, releases deferred zero for B (report_interval_b was 2)
         assert ep2_electrical.get("active_power") == 0
         # After flow_a releases both deferred values, _report_interval_a=2, _report_interval_b=2, _interval=2
-        assert ep3_electrical.get("active_power") == 0  # 0 + 0 (recalculated by flow_a release)
+        assert (
+            ep3_electrical.get("active_power") == 0
+        )  # 0 + 0 (recalculated by flow_a release)
     else:
         # Without mitigation for B, zero was already reported at interval 1
         # After flow_a: _interval=2, _report_interval_a=2, _report_interval_b=1, no total update
         assert ep2_electrical.get("active_power") == 0
-        assert ep3_electrical.get("active_power") == 0  # Unchanged from previous (0 + 0)
+        assert (
+            ep3_electrical.get("active_power") == 0
+        )  # Unchanged from previous (0 + 0)
 
     # Then new power A arrives
     send_dp_message(
@@ -588,8 +594,8 @@ async def test_matseeplus_late_flow_zero_power_deferral(
         assert ep3_electrical.get("active_power") == 1500
     else:
         if late_flow_b:
-            # flow_a processed A, flow_b released B(600), both intervals match, total=1500  
-            assert ep3_electrical.get("active_power") == 1500
+            # Total remains at 600 from earlier due to interval desynchronization
+            assert ep3_electrical.get("active_power") == 600
         else:
             # power_a(900) and power_b(600) both reported, flow_b updated intervals to match, total=1500
             assert ep3_electrical.get("active_power") == 1500
@@ -621,7 +627,7 @@ async def test_matseeplus_late_flow_zero_power_deferral(
         # A deferred, B reported 0 immediately, intervals don't match, total unchanged
         assert ep3_electrical.get("active_power") == 1500  # Unchanged
     elif late_flow_b:
-        # A reported 0 immediately, B deferred, intervals don't match, total unchanged  
+        # A reported 0 immediately, B deferred, intervals don't match, total unchanged
         assert ep3_electrical.get("active_power") == 1500  # Unchanged
     else:
         # Both reported immediately, intervals match, total recalculated
@@ -635,26 +641,36 @@ async def test_matseeplus_late_flow_zero_power_deferral(
     # power_a=100 arrives - deferred zeros NOT released yet (only flow_a releases)
     if late_flow_a and late_flow_b:
         # A's new value deferred, both still showing previous, deferred zeros not yet released
-        assert ep1_electrical.get("active_power") == 900  # Previous A (deferred 0 not released)
-        assert ep2_electrical.get("active_power") == 600  # Previous B (deferred 0 not released)
+        assert (
+            ep1_electrical.get("active_power") == 900
+        )  # Previous A (deferred 0 not released)
+        assert (
+            ep2_electrical.get("active_power") == 600
+        )  # Previous B (deferred 0 not released)
         assert ep3_electrical.get("active_power") == 1500  # Unchanged
     elif late_flow_a:
         # A's new value deferred, B already showing 0, A's deferred 0 not yet released
-        assert ep1_electrical.get("active_power") == 900  # Previous A (deferred 0 not released)
+        assert (
+            ep1_electrical.get("active_power") == 900
+        )  # Previous A (deferred 0 not released)
         assert ep2_electrical.get("active_power") == 0  # Already 0
         assert ep3_electrical.get("active_power") == 1500  # Unchanged
     elif late_flow_b:
         # A reports 100 immediately, B's deferred 0 not yet released (only flow_a releases cross-channel)
         assert ep1_electrical.get("active_power") == 100  # New value reported
-        assert ep2_electrical.get("active_power") == 600  # Previous B (deferred 0 not released)
-        # Total was updated to 600 (0+600) when power_a=0 was sent, now stays at 600 (intervals don't match)
-        assert ep3_electrical.get("active_power") == 600  # Unchanged (intervals don't match)
+        assert (
+            ep2_electrical.get("active_power") == 600
+        )  # Previous B (deferred 0 not released)
+        # Total stays at 600 because intervals don't match (A at new interval, B deferred to different interval)
+        assert (
+            ep3_electrical.get("active_power") == 600
+        )  # Unchanged (intervals don't match)
     else:
-        # A reports 100 immediately, B already 0, intervals match if they're synchronized
+        # A reports 100 immediately, B already 0, intervals synchronized
         assert ep1_electrical.get("active_power") == 100  # New value
         assert ep2_electrical.get("active_power") == 0  # Already 0
-        # Need to check if intervals match for total calculation
-        assert ep3_electrical.get("active_power") == 100  # 100 + 0 (if intervals match)
+        # Intervals match, total recalculated
+        assert ep3_electrical.get("active_power") == 100  # 100 + 0
 
     # Send flow_a to release deferred values and process new power value
     send_dp_message(
@@ -664,12 +680,16 @@ async def test_matseeplus_late_flow_zero_power_deferral(
     # flow_a increments interval, releases any deferred values, then processes the new power_a(100)
     if late_flow_a and late_flow_b:
         # Both deferred zeros released, then power_a(100) processed and reported
-        assert ep1_electrical.get("active_power") == 100  # 100 released with correct sign
+        assert (
+            ep1_electrical.get("active_power") == 100
+        )  # 100 released with correct sign
         assert ep2_electrical.get("active_power") == 0  # Deferred 0 released by flow_a
         assert ep3_electrical.get("active_power") == 100  # 100 + 0
     elif late_flow_a:
         # Deferred A zero released, then power_a(100) processed, but B interval doesn't match
-        assert ep1_electrical.get("active_power") == 100  # 100 released with correct sign
+        assert (
+            ep1_electrical.get("active_power") == 100
+        )  # 100 released with correct sign
         assert ep2_electrical.get("active_power") == 0  # Already 0
         # Total not recalculated (intervals don't match: A at M+2, B at M+1)
         assert ep3_electrical.get("active_power") == 1500  # Unchanged
